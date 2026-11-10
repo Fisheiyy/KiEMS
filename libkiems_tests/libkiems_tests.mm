@@ -2597,6 +2597,11 @@ static kiems::EyeAggressor eyeTestTone(const std::vector<double>& frequencies, d
     // Two-layer board: the only other layer is the plane for both sides.
     XCTAssertEqual(kiems::referencePlaneForPortLayer(1, 0, 2), 0);
     XCTAssertEqual(kiems::referencePlaneForPortLayer(0, 1, 2), 1);
+    // ...whichever side the plane index names: a port never references its own layer.
+    XCTAssertEqual(kiems::referencePlaneForPortLayer(1, 1, 2), 0);
+    XCTAssertEqual(kiems::referencePlaneForPortLayer(0, 0, 2), 1);
+    XCTAssertEqual(kiems::referencePlaneForPortLayer(7, 7, 8), 6);
+    XCTAssertEqual(kiems::referencePlaneForPortLayer(3, 3, 8), 4);
 }
 
 // A 0.36 mm ball at (x, y), in simulation units.

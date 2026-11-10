@@ -62,8 +62,13 @@ std::string differentialPairBaseName(std::string_view positiveNet, std::string_v
 std::int32_t referencePlaneForPortLayer(std::int32_t layer, std::int32_t plane, std::int32_t metalCount) {
     const std::int32_t bottom = metalCount - 1;
     // Only a plane nearer F.Cu than B.Cu belongs to the top side.
-    if (layer != bottom || plane < 0 || bottom - plane <= plane || bottom - plane >= layer) return plane;
-    return bottom - plane;
+    const bool mirrored = layer == bottom && plane >= 0 && bottom - plane > plane && bottom - plane < layer;
+    const std::int32_t reference = mirrored ? bottom - plane : plane;
+    // A port can't reference its own layer: its box would have no height. That's the usual case on a
+    // two-layer board with pads on both sides, where one plane index names F.Cu or B.Cu, so the pad
+    // there takes the nearest metal inward (the other side, on two layers).
+    if (reference == layer && metalCount > 1) return layer == bottom ? bottom - 1 : layer + 1;
+    return reference;
 }
 
 bool pinTypeAbsorbsByDefault(std::string_view pinType, bool directlyConnectedToGround) {
