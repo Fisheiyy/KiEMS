@@ -394,6 +394,7 @@ std::expected<void, std::string> Simulation::sliceBoard() {
     }
     _slicedBoard = std::move(*result);
     restrictLumpedComponentsToCutout(_simConfig, _slicedBoard);
+    warnAboutDisconnectedPortReturns(_simConfig, _slicedBoard, existingVias);
     return {};
 }
 

@@ -49,6 +49,7 @@ std::expected<SimulationGeometry, std::string> generateGeometry(const Simulation
         return std::unexpected(sliced.error());
     }
     restrictLumpedComponentsToCutout(data.configuration(), *sliced);
+    warnAboutDisconnectedPortReturns(data.configuration(), *sliced, existingVias);
     if (onProgress) {
         onProgress({GeometryProcessingPhase::Finishing, 0, 1});
     }

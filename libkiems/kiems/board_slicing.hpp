@@ -451,4 +451,15 @@ std::expected<SlicedBoard, std::string> sliceBoardForSimulation(
 /// probed) whose pad lies outside the cutout.
 void restrictLumpedComponentsToCutout(SimulationConfig& simulation, const SlicedBoard& board);
 
+/// Warns when the cut leaves ports' returns on ground copper that nothing in the simulated
+/// geometry joins: ports whose return bridges or pad-to-plane columns land on different pieces of
+/// copper, counting `vias` (the board's own, in the sliced frame) and the stitching vias as joins.
+/// The cut decides the hull before ports' returns are known to be connected, and a small hull can
+/// keep a ground pin while cutting away the trace or via that joins it to the rest of the ground;
+/// a port returning there has no return path to the others, and the signals between them come out
+/// as if through a small capacitor. Returns how many separate pieces the returns land on (0 when
+/// there are none to compare).
+std::size_t warnAboutDisconnectedPortReturns(const SimulationConfig& simulation, const SlicedBoard& board,
+                                             const std::vector<ViaHole>& vias);
+
 } // namespace kiems

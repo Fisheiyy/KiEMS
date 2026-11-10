@@ -2454,6 +2454,51 @@ static kiems::EyeAggressor eyeTestTone(const std::vector<double>& frequencies, d
     XCTAssertTrue(simulation.lumpedComponents()[1].reference() == "R2");
 }
 
+- (void)testPortReturnsOnUnjoinedGroundPiecesAreCounted {
+    // Top: one plane with an antipad at (80, 20). Bottom: two strips, x 0..40 and x 60..100.
+    kiems::SlicedBoard board;
+    const auto square = [](double x0, double y0, double x1, double y1) {
+        return Cu::Polygon{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+    };
+    Cu::Polygon antipad = square(75, 15, 85, 25);
+    std::reverse(antipad.begin(), antipad.end());
+    board.layerCopperLoops = {{square(0, 0, 100, 100), antipad}, {square(0, 0, 40, 100), square(60, 0, 100, 100)}};
+
+    kiems::SimulationConfig simulation;
+    simulation.setName("Returns");
+    kiems::PortConfig column; // pad on the bottom left strip, its column down to the top plane
+    column.setName("J1 pin 1");
+    column.setFootprintRef("J1");
+    column.setPosition({20, 50});
+    column.setLayer(1);
+    column.setPlane(0);
+    kiems::PortConfig bridged; // pad on the bottom left strip, bridged to a ground pad on the right strip
+    bridged.setName("U1 pin 5");
+    bridged.setFootprintRef("U1");
+    bridged.setPosition({30, 50});
+    bridged.setLayer(1);
+    bridged.setPlane(0);
+    kiems::PortReturnBridge bridge;
+    bridge.padNumber = "10";
+    bridge.position = {80, 50};
+    bridged.setReturnBridge(bridge);
+    simulation.ports() = {column, bridged};
+
+    // Nothing joins the top plane to the right strip, and a via in the plane's antipad doesn't either.
+    XCTAssertEqual(kiems::warnAboutDisconnectedPortReturns(simulation, board, {}), 2U);
+    kiems::ViaHole inAntipad;
+    inAntipad.x = inAntipad.x2 = 80;
+    inAntipad.y = inAntipad.y2 = 20;
+    XCTAssertEqual(kiems::warnAboutDisconnectedPortReturns(simulation, board, {inAntipad}), 2U);
+    // A via through both joins them, as does a stitching via.
+    kiems::ViaHole through;
+    through.x = through.x2 = 80;
+    through.y = through.y2 = 80;
+    XCTAssertEqual(kiems::warnAboutDisconnectedPortReturns(simulation, board, {through}), 1U);
+    board.stitchingVias.push_back({90, 50, 3, 6});
+    XCTAssertEqual(kiems::warnAboutDisconnectedPortReturns(simulation, board, {}), 1U);
+}
+
 - (void)testSliceBoardForSimulationCutsNPTHHolesFromPreviewOnly {
     const kiems::SlicingConfig slicing{
         .hullPadding = 1.0 * kSimUnitsPerMm,

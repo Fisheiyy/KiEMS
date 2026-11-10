@@ -7,6 +7,7 @@
 #endif
 #include <cmath>
 #include <unordered_map>
+#include <limits>
 #include <map>
 #include <set>
 #include <unordered_set>
@@ -964,6 +965,99 @@ void restrictLumpedComponentsToCutout(SimulationConfig& simulation, const Sliced
             }
         }
     }
+}
+
+std::size_t warnAboutDisconnectedPortReturns(const SimulationConfig& simulation, const SlicedBoard& board,
+                                             const std::vector<ViaHole>& vias) {
+    // Every outer loop of every layer's copper is one piece; a piece contains a point when the
+    // innermost loop around the point is that outer loop (not a hole inside it).
+    struct Piece {
+        std::size_t layer;
+        const Polygon* loop;
+    };
+    std::vector<Piece> pieces;
+    for (std::size_t layer = 0; layer < board.layerCopperLoops.size(); ++layer) {
+        for (const Polygon& loop : board.layerCopperLoops[layer]) {
+            if (loop.size() >= 3 && signedArea(loop) > 0) pieces.push_back({layer, &loop});
+        }
+    }
+    const auto inside = [](const Polygon& loop, double x, double y) {
+        bool in = false;
+        for (std::size_t i = 0, j = loop.size() - 1; i < loop.size(); j = i++) {
+            const double xi = loop[i].x(), yi = loop[i].y(), xj = loop[j].x(), yj = loop[j].y();
+            if ((yi > y) != (yj > y) && x < xi + (y - yi) * (xj - xi) / (yj - yi)) in = !in;
+        }
+        return in;
+    };
+    const auto pieceAt = [&](std::size_t layer, double x, double y) -> std::optional<std::size_t> {
+        if (layer >= board.layerCopperLoops.size()) return std::nullopt;
+        const Polygon* innermost = nullptr;
+        double innermostArea = std::numeric_limits<double>::infinity();
+        for (const Polygon& loop : board.layerCopperLoops[layer]) {
+            if (loop.size() < 3 || !inside(loop, x, y)) continue;
+            const double loopArea = std::abs(signedArea(loop));
+            if (loopArea < innermostArea) {
+                innermostArea = loopArea;
+                innermost = &loop;
+            }
+        }
+        if (innermost == nullptr || signedArea(*innermost) <= 0) return std::nullopt;
+        for (std::size_t i = 0; i < pieces.size(); ++i) {
+            if (pieces[i].loop == innermost) return i;
+        }
+        return std::nullopt;
+    };
+
+    std::vector<std::size_t> parent(pieces.size());
+    for (std::size_t i = 0; i < parent.size(); ++i) parent[i] = i;
+    const auto root = [&](std::size_t i) {
+        while (parent[i] != i) i = parent[i] = parent[parent[i]];
+        return i;
+    };
+    // A via (through, as Simulation::addVia() builds it) joins the copper around it on every layer.
+    const auto join = [&](double x, double y) {
+        std::optional<std::size_t> first;
+        for (std::size_t layer = 0; layer < board.layerCopperLoops.size(); ++layer) {
+            const auto piece = pieceAt(layer, x, y);
+            if (!piece) continue;
+            if (!first) first = *piece;
+            else parent[root(*piece)] = root(*first);
+        }
+    };
+    for (const ViaHole& via : vias) {
+        join(via.x, via.y);
+        if (via.x2 != via.x || via.y2 != via.y) join(via.x2, via.y2);
+    }
+    for (const StitchingVia& via : board.stitchingVias) join(via.x, via.y);
+
+    // Each port's return: where its bridge's pillar stands, on its own layer, or where its column
+    // meets its reference plane.
+    std::map<std::size_t, std::vector<std::string>> portsByGroup;
+    for (const PortConfig& port : simulation.ports()) {
+        if (port.isTraceProbe() || port.footprintRef().empty() || !port.position().has_value()) continue;
+        const auto& bridge = port.returnBridge();
+        const auto [x, y] = bridge.has_value() ? bridge->position : *port.position();
+        const auto layer = static_cast<std::size_t>(bridge.has_value() ? port.layer() : port.plane());
+        const auto piece = pieceAt(layer, x, y);
+        if (!piece) continue; // a column with nothing under it is _assignReturnBridges()'s business
+        portsByGroup[root(*piece)].push_back(
+            port.name() + (bridge.has_value() ? " returning to " + returnBridgeTarget(port.footprintRef(), *bridge)
+                                              : " returning through its pad-to-plane column"));
+    }
+    if (portsByGroup.size() > 1) {
+        std::string groups;
+        for (const auto& [group, names] : portsByGroup) {
+            groups += groups.empty() ? "" : "; ";
+            for (std::size_t i = 0; i < names.size(); ++i) groups += (i ? ", " : "") + names[i];
+        }
+        logWarning("Simulation \"" + simulation.name() + "\": the cut leaves the ports' returns on " +
+                   std::to_string(portsByGroup.size()) +
+                   " pieces of ground that no simulated copper or via joins: " + groups +
+                   ". Signals between ports on different pieces have no return path, so their "
+                   "S-parameters will be wrong; raise the involved nets' hull_padding to bring in the copper that "
+                   "joins them");
+    }
+    return portsByGroup.size();
 }
 
 std::expected<HullCutPlan, std::string> planHullCuts(const EMSConfig& fileConfig, std::size_t simulationIndex,
