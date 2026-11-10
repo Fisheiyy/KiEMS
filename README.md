@@ -279,7 +279,10 @@ cmake --build --preset windows-msvc-gui-release --target kiems-gui
 The app runs the pipeline through `kiems`, which it expects beside its own
 executable; building `kiems-gui` builds the command-line tools too. Its
 **Simulation > Engine...** setting (also in the status bar) chooses between
-Automatic (the GPU when there is one), GPU and CPU, and which GPU.
+Automatic (the GPU when there is one), GPU and CPU, and which GPU. Each
+simulation's **Field Viewer** plays back field frames stored by
+**Simulation > Run and Store Fields** (`kiems --field-frames`) as a slice
+through the board at any height, with the board drawn over it.
 `kiems-gui-tests`, built on request, tests its editing logic without showing a
 window. So far the app has been built and tested on Windows only.
 

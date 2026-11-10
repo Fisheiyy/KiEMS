@@ -24,6 +24,7 @@ class QTreeWidgetItem;
 namespace kiems_gui {
 
 class BoardView;
+class FieldViewer;
 class Inspector;
 class ResultsView;
 
@@ -38,7 +39,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
-    enum class Page { Board, Results };
+    enum class Page { Board, Results, Fields };
 
     void createActions();
     void newDocument();
@@ -50,6 +51,8 @@ private:
     void addSimulation();
     void removeSimulation();
     void runSelected();
+    /// Runs the selected simulation; `storeFields` also keeps its field frames for the Field Viewer.
+    void runSimulation(bool storeFields);
     void stopRun();
     void showEngineSettings();
     void updateEngineButton();
@@ -80,6 +83,7 @@ private:
     QListWidget* _layerList;
     BoardView* _boardView;
     ResultsView* _resultsView;
+    FieldViewer* _fieldViewer;
     Inspector* _inspector;
     QDockWidget* _logDock;
     QPlainTextEdit* _log;
@@ -90,11 +94,13 @@ private:
 
     QAction* _saveAction;
     QAction* _runAction;
+    QAction* _runFieldsAction;
     QAction* _stopAction;
     QAction* _addAction;
     QAction* _removeAction;
     bool _rebuildingSidebar = false;
     QString _runningSimulation;
+    bool _runningStoresFields = false;
 };
 
 } // namespace kiems_gui

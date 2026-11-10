@@ -18,6 +18,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     EngineSettings.hpp
     EyeTestPresets.cpp
     EyeTestPresets.hpp
+    FieldViewer.cpp
+    FieldViewer.hpp
     Inspector.cpp
     Inspector.hpp
     MainWindow.cpp
@@ -46,7 +48,8 @@ target_include_directories(kiems-gui PRIVATE
     "${PROJECT_SOURCE_DIR}"
     "${PROJECT_SOURCE_DIR}/libkiems"
     "${PROJECT_SOURCE_DIR}/submodules")
-target_link_libraries(kiems-gui PRIVATE libkiems libkicad Qt6::Widgets Qt6::Charts Qt6::Concurrent)
+# Copper for its field frame-series reader (the Field Viewer).
+target_link_libraries(kiems-gui PRIVATE libkiems libkicad Copper Qt6::Widgets Qt6::Charts Qt6::Concurrent)
 
 # The app runs the pipeline through the command-line tools, found beside its own executable.
 add_dependencies(kiems-gui kiems-cli kiems_fdtd_worker copper_fdtd_worker)

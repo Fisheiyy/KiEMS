@@ -1,6 +1,7 @@
 #include "MainWindow.hpp"
 
 #include "BoardView.hpp"
+#include "FieldViewer.hpp"
 #include "Inspector.hpp"
 #include "ResultsView.hpp"
 
@@ -125,9 +126,11 @@ MainWindow::MainWindow() {
     boardLayout->addWidget(_boardView, 0, 0);
     boardLayout->addWidget(_layerList, 0, 0, Qt::AlignTop | Qt::AlignLeft);
     _resultsView = new ResultsView;
+    _fieldViewer = new FieldViewer;
     _pages->addWidget(_emptyPage);
     _pages->addWidget(_boardPage);
     _pages->addWidget(_resultsView);
+    _pages->addWidget(_fieldViewer);
 
     _inspector = new Inspector(&_document);
     _inspector->setMinimumWidth(300);
@@ -185,6 +188,7 @@ MainWindow::MainWindow() {
     connect(_addButton, &QPushButton::clicked, this, &MainWindow::addSimulation);
     connect(_removeButton, &QPushButton::clicked, this, &MainWindow::removeSimulation);
     connect(_stopButton, &QPushButton::clicked, this, &MainWindow::stopRun);
+    connect(_fieldViewer, &FieldViewer::captureRequested, this, [this] { runSimulation(true); });
     connect(_engineButton, &QPushButton::clicked, this, &MainWindow::showEngineSettings);
     connect(&_gpuDevices, &GpuDeviceList::changed, this, &MainWindow::updateEngineButton);
     connect(_sidebar, &QTreeWidget::currentItemChanged, this, &MainWindow::selectionChanged);
@@ -199,6 +203,7 @@ MainWindow::MainWindow() {
     connect(&_boardModel, &BoardModel::loaded, this, [this] {
         _statusLabel->setText(_boardModel.data() ? tr("Board loaded.") : QString());
         _boardView->setBoard(_boardModel.data());
+        _fieldViewer->setBoard(_boardModel.data());
         _inspector->setBoard(_boardModel.data());
         populateLayerList();
         updateHighlights();
@@ -223,10 +228,12 @@ MainWindow::MainWindow() {
         _statusLabel->setText(succeeded ? tr("%1 finished.").arg(_runningSimulation)
                                         : tr("%1: %2").arg(_runningSimulation, message));
         const int simulation = _document.simulationIndex(_runningSimulation);
+        const bool storedFields = _runningStoresFields;
         _runningSimulation.clear();
+        _runningStoresFields = false;
         rebuildSidebar();
         updateActions();
-        if (succeeded && simulation >= 0) showPage(simulation, Page::Results);
+        if (succeeded && simulation >= 0) showPage(simulation, storedFields ? Page::Fields : Page::Results);
         else if (!succeeded && message != tr("Stopped.")) {
             QMessageBox::warning(this, tr("KiEMS"), tr("The simulation failed:\n\n%1").arg(message));
         }
@@ -256,6 +263,8 @@ void MainWindow::createActions() {
     _removeAction = simulation->addAction(tr("&Remove Simulation"), this, &MainWindow::removeSimulation);
     simulation->addSeparator();
     _runAction = simulation->addAction(tr("&Run"), QKeySequence(Qt::CTRL | Qt::Key_R), this, &MainWindow::runSelected);
+    _runFieldsAction = simulation->addAction(tr("Run and Store &Fields"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
+                                             this, [this] { runSimulation(true); });
     _stopAction = simulation->addAction(tr("S&top"), QKeySequence(Qt::CTRL | Qt::Key_Period), this, &MainWindow::stopRun);
     simulation->addSeparator();
     simulation->addAction(tr("&Engine..."), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E), this,
@@ -396,6 +405,10 @@ void MainWindow::removeSimulation() {
 }
 
 void MainWindow::runSelected() {
+    runSimulation(false);
+}
+
+void MainWindow::runSimulation(bool storeFields) {
     const int simulation = currentSimulation();
     if (simulation < 0 || _runner.isRunning()) return;
     if (const QString problem = _document.validate(); !problem.isEmpty()) {
@@ -413,9 +426,17 @@ void MainWindow::runSelected() {
     _runningSimulation = _document.simulationName(simulation);
     _log->clear();
     _log->appendPlainText(tr("Engine: %1").arg(_engine.describe(_gpuDevices)));
-    if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), _runningSimulation,
-                       _engine.arguments(_gpuDevices), &error)) {
+    QStringList arguments = _engine.arguments(_gpuDevices);
+    if (storeFields) {
+        arguments << "--field-frames";
+        // The run writes the other of the two alternating series files, but there's no reason
+        // to keep the old one open while it does.
+        _fieldViewer->close();
+    }
+    _runningStoresFields = storeFields;
+    if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), _runningSimulation, arguments, &error)) {
         _runningSimulation.clear();
+        _runningStoresFields = false;
         QMessageBox::warning(this, tr("KiEMS"), error);
         return;
     }
@@ -471,10 +492,16 @@ void MainWindow::rebuildSidebar() {
         results->setData(0, kSimulationRole, i);
         results->setData(0, kPageRole, static_cast<int>(Page::Results));
         results->setIcon(0, statusDot(_document.hasResults(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
+        auto* fields = new QTreeWidgetItem(top, {tr("Field Viewer")});
+        fields->setData(0, kSimulationRole, i);
+        fields->setData(0, kPageRole, static_cast<int>(Page::Fields));
+        const bool haveFields = !FieldViewer::findSeries(_document.simulationDir(i)).empty();
+        fields->setIcon(0, statusDot(haveFields, running && _runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
         top->setExpanded(true);
         if (i == selectedSimulation) {
-            _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results) ? results
-                                     : selectedPage == static_cast<int>(Page::Board) ? board
+            _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)  ? results
+                                     : selectedPage == static_cast<int>(Page::Fields) ? fields
+                                     : selectedPage == static_cast<int>(Page::Board)  ? board
                                                                                       : top);
         }
     }
@@ -495,6 +522,13 @@ void MainWindow::selectionChanged() {
                                                           _document.simulationDir(simulation)));
         _pages->setCurrentWidget(_resultsView);
         _inspector->hide();
+    } else if (page == static_cast<int>(Page::Fields)) {
+        const SimulationResults results =
+            SimulationResults::load(_document.resultsDir(simulation), _document.simulationDir(simulation));
+        _fieldViewer->showSimulation(_document.simulationName(simulation), _document.simulationDir(simulation),
+                                     results.portNames);
+        _pages->setCurrentWidget(_fieldViewer);
+        _inspector->hide();
     } else if (_document.isOpen()) {
         _pages->setCurrentWidget(_boardPage);
         _inspector->show();
@@ -505,7 +539,7 @@ void MainWindow::showPage(int simulation, Page page) {
     for (int i = 0; i < _sidebar->topLevelItemCount(); ++i) {
         QTreeWidgetItem* top = _sidebar->topLevelItem(i);
         if (top->data(0, kSimulationRole).toInt() != simulation) continue;
-        _sidebar->setCurrentItem(top->child(page == Page::Board ? 0 : 1));
+        _sidebar->setCurrentItem(top->child(page == Page::Board ? 0 : page == Page::Results ? 1 : 2));
         selectionChanged();
         return;
     }
@@ -564,6 +598,7 @@ void MainWindow::updateActions() {
     _removeAction->setEnabled(haveSimulation && !running);
     _removeButton->setEnabled(haveSimulation && !running);
     _runAction->setEnabled(haveSimulation && !running && !PipelineRunner::cliPath().isEmpty());
+    _runFieldsAction->setEnabled(_runAction->isEnabled());
     _stopAction->setEnabled(running);
 }
 
