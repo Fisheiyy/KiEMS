@@ -409,13 +409,59 @@ std::filesystem::path executableDir() {
 #endif
 }
 
-void createDir(const std::filesystem::path& directoryPath, bool cleanup = false) {
-    if (cleanup && std::filesystem::exists(directoryPath)) {
-        std::filesystem::remove_all(directoryPath);
+void createDir(const std::filesystem::path& directoryPath) {
+    std::error_code error;
+    std::filesystem::create_directories(directoryPath, error);
+}
+
+/// Empties `directory` of everything but the entries named in `keep`. A file another program
+/// holds open can't be deleted on Windows, so a failure names what couldn't be removed rather than
+/// escaping as an exception.
+std::expected<void, std::string> clearDirectory(const std::filesystem::path& directory,
+                                                const std::vector<std::string>& keep = {}) {
+    std::error_code error;
+    if (!std::filesystem::exists(directory, error)) return {};
+    // Listed first: removing entries while iterating the directory is unspecified.
+    std::vector<std::filesystem::path> entries;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) entries.push_back(entry.path());
+    if (error) return std::unexpected("Couldn't read " + pathToUtf8(directory) + ": " + error.message());
+    for (const std::filesystem::path& entry : entries) {
+        if (std::find(keep.begin(), keep.end(), pathToUtf8(entry.filename())) != keep.end()) continue;
+        std::filesystem::remove_all(entry, error);
+        if (error) {
+            return std::unexpected("Couldn't remove " + pathToUtf8(entry) + " from the last run: " + error.message() +
+                                   ". If another program (or a viewer of this simulation's files) has it open, "
+                                   "close it and run again.");
+        }
     }
-    if (!std::filesystem::exists(directoryPath)) {
-        std::filesystem::create_directory(directoryPath);
+    return {};
+}
+
+/// Clears a stage's output (ems/geometry, ems/simulation or ems/results) for this run: only the
+/// simulations named with --simulation when there are any, so other simulations' results survive,
+/// and otherwise the whole stage. `keep` names entries inside each simulation's folder to leave.
+std::expected<void, std::string> clearStage(const std::filesystem::path& stageDirectory,
+                                            const std::vector<std::string>& simulations,
+                                            const std::vector<std::string>& keep = {}) {
+    createDir(stageDirectory);
+    if (simulations.empty()) {
+        std::error_code error;
+        std::vector<std::filesystem::path> entries;
+        for (const auto& entry : std::filesystem::directory_iterator(stageDirectory, error)) entries.push_back(entry.path());
+        for (const std::filesystem::path& entry : entries) {
+            if (!keep.empty() && std::filesystem::is_directory(entry, error)) {
+                if (auto cleared = clearDirectory(entry, keep); !cleared) return cleared;
+            } else if (std::filesystem::remove_all(entry, error); error) {
+                return std::unexpected("Couldn't remove " + pathToUtf8(entry) + " from the last run: " +
+                                       error.message() + ". If another program has it open, close it and run again.");
+            }
+        }
+        return {};
     }
+    for (const std::string& simulation : simulations) {
+        if (auto cleared = clearDirectory(stageDirectory / pathFromUtf8(simulation), keep); !cleared) return cleared;
+    }
+    return {};
 }
 
 /// Every simulation's frequency-domain results, once postprocessed -- writes CSVs/PNGs to
@@ -838,7 +884,10 @@ int main(int argc, char** argv) {
 
     if (args.geometry() || args.all()) {
         logInfo("Creating geometry");
-        createDir(paths.geometryDir, true);
+        if (auto cleared = clearStage(paths.geometryDir, args.simulations()); !cleared) {
+            logError(cleared.error());
+            return EXIT_FAILURE;
+        }
         auto result = GeometryResult::build(std::move(config), options, paths, board, printGeometryProgress);
         if (!result) {
             logError(result.error());
@@ -848,7 +897,16 @@ int main(int argc, char** argv) {
     }
     if (args.simulate() || args.all()) {
         logInfo("Running simulation");
-        createDir(paths.simulationDir, true);
+        // Storing fields keeps the last run's series: this run writes the other of its two slots,
+        // so a viewer that has the old one open isn't disturbed. Without --field-frames they'd be
+        // stale, so they go with everything else.
+        const std::vector<std::string> keep = args.fieldFrames()
+            ? std::vector<std::string>{kFieldFramePackage, kFieldFrameManifest}
+            : std::vector<std::string>{};
+        if (auto cleared = clearStage(paths.simulationDir, args.simulations(), keep); !cleared) {
+            logError(cleared.error());
+            return EXIT_FAILURE;
+        }
         if (!geometryResult.has_value()) {
             // -s invoked standalone, in a separate process from whichever -g produced this data.
             auto loaded = GeometryResult::load(std::move(config), paths);
@@ -902,7 +960,10 @@ int main(int argc, char** argv) {
     }
     if (args.postprocess() || args.all()) {
         logInfo("Postprocessing");
-        createDir(paths.resultsDir, true);
+        if (auto cleared = clearStage(paths.resultsDir, args.simulations()); !cleared) {
+            logError(cleared.error());
+            return EXIT_FAILURE;
+        }
         if (!simulationResult.has_value()) {
             // -p invoked standalone: reload geometry (if this invocation didn't just build it) and
             // Sx<port>.csv from args.input() -- the CLI's own -i override, defaulting to
