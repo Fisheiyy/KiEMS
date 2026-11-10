@@ -993,18 +993,43 @@ BridgePad _bridgePad(const PadIdentity& pad, const Position& origin) {
             _mmToSimUnits(std::min(pad.widthMm, pad.heightMm))};
 }
 
+/// Why a pin port gets a return bridge.
+enum class _BridgeReason { None, Via, NoPlane, Partner };
+
+/// Each port's differential-pair partner -- the other leg of a pair's excitation, or of its probe --
+/// by index into sim.ports().
+std::vector<std::optional<std::size_t>> _diffPairPartners(const SimulationConfig& sim) {
+    std::vector<std::optional<std::size_t>> partners(sim.ports().size());
+    const auto link = [&](const PortRef& a, const PortRef& b) {
+        if (!a.resolvedIndex() || !b.resolvedIndex() || *a.resolvedIndex() == *b.resolvedIndex()) return;
+        const auto i = static_cast<std::size_t>(*a.resolvedIndex()), j = static_cast<std::size_t>(*b.resolvedIndex());
+        if (i >= partners.size() || j >= partners.size()) return;
+        partners[i] = j;
+        partners[j] = i;
+    };
+    for (const DifferentialPairConfig& pair : sim.diffPairs()) {
+        link(pair.positiveExcitation(), pair.negativeExcitation());
+        link(pair.positiveProbe(), pair.negativeProbe());
+    }
+    return partners;
+}
+
 /// Gives a pin port a return bridge (see PortConfig::returnBridge()) instead of a vertical column
 /// when the column would swallow a via barrel, or when its reference plane isn't ground under it --
 /// under kMinColumnGroundShare of its footprint over ground, or any other copper there. That is
 /// common on a two-layer board, where the other side is routing as much as pour: the column's end
-/// cap would join whatever copper it lands on, another net's included, or float. Each side of
-/// the board's bridges is planned together, so none of them can touch. A port with no ground pad
-/// close enough, or no clear route to one, keeps its column, with a warning: its readings and its
-/// loading will be wrong.
+/// cap would join whatever copper it lands on, another net's included, or float. The two legs of a
+/// differential pair are bridged together, so a pair isn't measured through two different port
+/// models (which reads as mode conversion); if the leg that needs a bridge can't get one, the other
+/// keeps its column too. Legs that need a bridge are planned first, and alone as well, so matching a
+/// partner never costs one its bridge. Each side of the board's bridges is planned together, so
+/// none of them can touch. A port with no ground pad close enough, or no clear route to one, keeps
+/// its column, with a warning: its readings and its loading will be wrong.
 void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const _ReturnBridgeBoard& data,
                           const std::unordered_set<NetName, NetNameHash>& groundNets, const Position& origin) {
     const auto metalCount = static_cast<std::int32_t>(config.getMetals().size());
     const double plating = config.via().platingThickness() * constants::unitMultiplier;
+    const std::vector<std::optional<std::size_t>> partners = _diffPairPartners(sim);
     // Bridges only have open air to run through off the outer copper layers.
     for (const std::int32_t side : std::set<std::int32_t>{0, metalCount - 1}) {
         // Excitations and probes are routed ahead of plain absorbers, so the ports actually measured
@@ -1015,30 +1040,49 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
             const PortConfig& port = sim.ports()[index];
             return (port.excite() ? 2 : 0) + (port.probe() ? 1 : 0);
         });
-        std::vector<std::size_t> portIndices;
-        std::vector<ReturnBridgeRequest> requests;
-        std::vector<bool> planeMissing;
+
+        // Which ports on this side could take a bridge (a pin, on a footprint whose pads are known,
+        // not itself ground), and which need one.
+        std::vector<const PadIdentity*> ownPad(sim.ports().size(), nullptr);
+        std::vector<_BridgeReason> reason(sim.ports().size(), _BridgeReason::None);
         for (const std::size_t index : order) {
             const PortConfig& port = sim.ports()[index];
             if (port.isTraceProbe() || port.footprintRef().empty() || port.layer() != side ||
                 !port.position().has_value() || !port.direction().has_value()) {
                 continue;
             }
-            const bool hitsVia = _columnHitsViaBarrel(port, data.vias, plating);
-            bool noPlane = false;
-            if (!hitsVia) {
-                const _PlaneUnderColumn under = _planeUnderColumn(port, data.copper, groundNets);
-                noPlane = under.otherCopper || under.groundShare < kMinColumnGroundShare;
-            }
-            if (!hitsVia && !noPlane) continue;
             const auto footprintPads = data.padsByFootprint.find(port.footprintRef());
             if (footprintPads == data.padsByFootprint.end()) continue;
             const auto own = std::ranges::find(footprintPads->second, port.padNumber(), &PadIdentity::padNumber);
             if (own == footprintPads->second.end() || groundNets.contains(NetName(own->netName))) continue;
+            ownPad[index] = &*own;
+            if (_columnHitsViaBarrel(port, data.vias, plating)) {
+                reason[index] = _BridgeReason::Via;
+                continue;
+            }
+            const _PlaneUnderColumn under = _planeUnderColumn(port, data.copper, groundNets);
+            if (under.otherCopper || under.groundShare < kMinColumnGroundShare) reason[index] = _BridgeReason::NoPlane;
+        }
+        for (std::size_t index = 0; index < reason.size(); ++index) {
+            const auto partner = partners[index];
+            if (reason[index] == _BridgeReason::None && ownPad[index] != nullptr && partner.has_value() &&
+                (reason[*partner] == _BridgeReason::Via || reason[*partner] == _BridgeReason::NoPlane)) {
+                reason[index] = _BridgeReason::Partner;
+            }
+        }
+
+        // Ports that need a bridge are routed before those only matching a partner, so a bridge taken
+        // for consistency is the one to lose a contested route.
+        std::ranges::stable_sort(order, {}, [&](std::size_t index) { return reason[index] == _BridgeReason::Partner; });
+        std::vector<std::size_t> portIndices;
+        std::vector<ReturnBridgeRequest> requests;
+        for (const std::size_t index : order) {
+            if (reason[index] == _BridgeReason::None) continue;
+            const PadIdentity& own = *ownPad[index];
             ReturnBridgeRequest request;
-            request.pad = _bridgePad(*own, origin);
-            for (const PadIdentity& candidate : footprintPads->second) {
-                if (candidate.padNumber == own->padNumber || candidate.copperLayerName != own->copperLayerName ||
+            request.pad = _bridgePad(own, origin);
+            for (const PadIdentity& candidate : data.padsByFootprint.at(sim.ports()[index].footprintRef())) {
+                if (candidate.padNumber == own.padNumber || candidate.copperLayerName != own.copperLayerName ||
                     !groundNets.contains(NetName(candidate.netName))) {
                     continue;
                 }
@@ -1052,20 +1096,55 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
                 request.returnPads = _pourReturnPoints(data.copper, groundNets, side, request.pad,
                                                        _mmToSimUnits(kMaxPourReturnDistanceMm));
             }
-            if (hitsVia) sim.ports()[index].setColumnHitsVia(true);
+            if (reason[index] == _BridgeReason::Via) sim.ports()[index].setColumnHitsVia(true);
             portIndices.push_back(index);
             requests.push_back(std::move(request));
-            planeMissing.push_back(noPlane);
         }
         if (requests.empty()) continue;
 
-        const auto plans = planReturnBridges(requests, _mmToSimUnits(kMaxReturnBridgeDistanceMm));
+        // Every request's pillar is reserved before any route is chosen, so a partner's pillar can
+        // block a route the port that needs it had alone. Plan the needed ones alone too, and keep
+        // the partners' plan only if it bridges every port that plan does.
+        auto plans = planReturnBridges(requests, _mmToSimUnits(kMaxReturnBridgeDistanceMm));
+        const auto needed = static_cast<std::size_t>(std::ranges::count_if(
+            portIndices, [&](std::size_t index) { return reason[index] != _BridgeReason::Partner; }));
+        if (needed < requests.size()) {
+            const std::vector<ReturnBridgeRequest> neededRequests(requests.begin(),
+                                                                  requests.begin() + static_cast<std::ptrdiff_t>(needed));
+            const auto alone = planReturnBridges(neededRequests, _mmToSimUnits(kMaxReturnBridgeDistanceMm));
+            bool partnersCost = false;
+            for (std::size_t i = 0; i < needed; ++i) partnersCost |= alone[i].has_value() && !plans[i].has_value();
+            if (partnersCost) {
+                for (std::size_t i = 0; i < needed; ++i) plans[i] = alone[i];
+                for (std::size_t i = needed; i < plans.size(); ++i) plans[i].reset();
+            }
+        }
+        std::vector<bool> planned(sim.ports().size(), false);
+        for (std::size_t i = 0; i < plans.size(); ++i) planned[portIndices[i]] = plans[i].has_value();
         std::size_t bridged = 0;
         for (std::size_t i = 0; i < plans.size(); ++i) {
-            PortConfig& port = sim.ports()[portIndices[i]];
-            if (!plans[i].has_value()) {
+            const std::size_t index = portIndices[i];
+            PortConfig& port = sim.ports()[index];
+            if (reason[index] == _BridgeReason::Partner) {
+                // Only alongside its partner's bridge: a column paired with a column beats a mixed pair.
+                const std::string& partnerName = sim.ports()[*partners[index]].name();
+                if (!planned[*partners[index]]) {
+                    logInfo("Simulation \"" + sim.name() + "\": port " + port.name() +
+                            " keeps its pad-to-plane column, as its differential-pair partner " + partnerName +
+                            " does");
+                    continue;
+                }
+                if (!plans[i].has_value()) {
+                    logWarning("Simulation \"" + sim.name() + "\": port " + port.name() +
+                               " has no clear route to ground to match its differential-pair partner " + partnerName +
+                               "'s return bridge, so the pair is measured through two kinds of port -- expect some "
+                               "false mode conversion");
+                    continue;
+                }
+            } else if (!plans[i].has_value()) {
+                const bool noPlane = reason[index] == _BridgeReason::NoPlane;
                 logWarning("Simulation \"" + sim.name() + "\": port " + port.name() +
-                           (planeMissing[i]
+                           (noPlane
                                 ? " has too little ground, or other copper, opposite it on its reference plane, so "
                                   "a pad-to-plane port would return through the wrong copper, but no ground "
                                 : " sits on a via, so a pad-to-plane port would replace the via's barrel, but no "
@@ -1073,7 +1152,7 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
                            "pad on " + port.footprintRef() + " within " +
                            std::to_string(static_cast<int>(kMaxReturnBridgeDistanceMm)) +
                            " mm, nor ground pour nearby, has a clear route -- " +
-                           (port.excite() || port.probe() || port.isTraceProbe() || planeMissing[i]
+                           (port.excite() || port.probe() || port.isTraceProbe() || noPlane
                                 ? std::string("its readings and loading will be wrong")
                                 : std::string("dropping it")));
                 continue;
@@ -1081,12 +1160,13 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
             ++bridged;
             logDebug("Simulation \"" + sim.name() + "\": port " + port.name() + " returns to " +
                      returnBridgeTarget(port.footprintRef(), *plans[i]) +
-                     (plans[i]->corner.has_value() ? " through an L route" : " in a straight run"));
+                     (plans[i]->corner.has_value() ? " through an L route" : " in a straight run") +
+                     (reason[index] == _BridgeReason::Partner ? ", matching its differential-pair partner" : ""));
             port.setReturnBridge(plans[i]);
         }
         logInfo("Simulation \"" + sim.name() + "\": " + std::to_string(bridged) + " of " +
                 std::to_string(plans.size()) +
-                " port(s) on via-in-pad pads or with no plane opposite bridged to a ground pad on " +
+                " port(s) on via-in-pad pads, with no plane opposite, or paired with one bridged to ground on " +
                 (side == 0 ? "the top" : "the bottom"));
     }
 }
