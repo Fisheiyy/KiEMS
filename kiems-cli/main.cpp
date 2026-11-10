@@ -754,7 +754,7 @@ void setGpuDevice(const std::string& device) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int runCli(int argc, char** argv) {
 #if defined(_WIN32)
     kiems_cli::reportUncaughtExceptions();
     kiems_cli::addGnuplotToPathIfMissing();
@@ -996,4 +996,15 @@ int main(int argc, char** argv) {
     }
 
     return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+    // libkiems reports most failures through std::expected, but a few deep in geometry and the
+    // engines still throw; report those like any other error rather than aborting.
+    try {
+        return runCli(argc, argv);
+    } catch (const std::exception& exception) {
+        logError(exception.what());
+        return EXIT_FAILURE;
+    }
 }
