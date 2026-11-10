@@ -1,6 +1,6 @@
 // A dedicated, single-purpose process that runs exactly one port's FDTD pass on Copper's GPU
 // engine and exits -- the GPU sibling of kiems_fdtd_worker (see that target's own main.cpp,
-// which this one mirrors closely), posix_spawn'd by Simulation::run() when
+// which this one mirrors closely), spawned as a child process by Simulation::run() when
 // RunOptions::backend == FDTDBackend::CopperGPU. Same job.json contract, same worker_error.txt
 // failure convention, same exit-code convention -- Simulation::run() itself can't tell which
 // backend actually produced a given simulation directory's output.
@@ -25,6 +25,7 @@
 #include "kiems/constants.hpp"
 #include "kiems/importer.hpp"
 #include "kiems/paths_config.hpp"
+#include "kiems/path_utf8.hpp"
 #include "kiems/port_resolution.hpp"
 #include "kiems/simulation.hpp"
 #include "kiems/simulation_data.hpp"
@@ -52,7 +53,7 @@ int main(int argc, char** argv) {
 
     std::ifstream jobFile(jobPath);
     if (!jobFile.is_open()) {
-        writeError(simPath, "Could not open job file: " + jobPath.string());
+        writeError(simPath, "Could not open job file: " + pathToUtf8(jobPath));
         return EXIT_FAILURE;
     }
     nlohmann::json job;
@@ -69,7 +70,7 @@ int main(int argc, char** argv) {
     std::optional<std::uint32_t> maxTimestepsOverride;
     bool irregularDomain = true;
     try {
-        configPath = job.at("config_path").get<std::string>();
+        configPath = pathFromUtf8(job.at("config_path").get<std::string>());
         simName = job.at("simulation_name").get<std::string>();
         excitedPort = job.value("excited_port", -1);
         if (job.contains("max_timesteps")) {
@@ -126,7 +127,7 @@ int main(int argc, char** argv) {
         }
     }
     if (simConfig == nullptr) {
-        writeError(simPath, "Simulation \"" + simName + "\" not found in " + configPath.string());
+        writeError(simPath, "Simulation \"" + simName + "\" not found in " + pathToUtf8(configPath));
         return EXIT_FAILURE;
     }
     // Benchmark/diagnostic jobs may omit the derived port index and ask for the first configured
@@ -229,7 +230,7 @@ int main(int argc, char** argv) {
     for (const copper::CopperProbeResult& probeResult : gpuResult.probes) {
         std::ofstream probeFile(probeDir / probeResult.name);
         if (!probeFile.is_open()) {
-            writeError(simPath, "Failed to open probe file for writing: " + (probeDir / probeResult.name).string());
+            writeError(simPath, "Failed to open probe file for writing: " + pathToUtf8(probeDir / probeResult.name));
             return EXIT_FAILURE;
         }
         probeFile << probeResult.data();

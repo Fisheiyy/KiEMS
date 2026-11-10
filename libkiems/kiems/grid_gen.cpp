@@ -10,6 +10,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <utility>
+#include <numbers>
 
 #include "config.hpp"
 #include "constants.hpp"
@@ -488,7 +489,7 @@ public:
             const double slenX = std::abs(seg.start().x() - seg.stop().x());
             const double slenY = std::abs(seg.start().y() - seg.stop().y());
             const double ang = std::atan2(slenY, slenX);
-            const double deg5 = M_PI / 36; // angle smaller than 5 degrees
+            const double deg5 = std::numbers::pi / 36; // angle smaller than 5 degrees
 
             const double p0 = axisValue(seg.start(), _axis);
             const double p1 = axisValue(seg.stop(), _axis);
@@ -514,9 +515,9 @@ public:
                 continue;
             }
 
-            if ((ang < deg5 && _axis == "x") || (ang > M_PI / 2 - deg5 && _axis == "y")) {
+            if ((ang < deg5 && _axis == "x") || (ang > std::numbers::pi / 2 - deg5 && _axis == "y")) {
                 _perpendicular.push_back(region);
-            } else if ((ang < deg5 && _axis == "y") || (ang > M_PI / 2 - deg5 && _axis == "x")) {
+            } else if ((ang < deg5 && _axis == "y") || (ang > std::numbers::pi / 2 - deg5 && _axis == "x")) {
                 _parallel.push_back(region);
                 if (seg.width() != 0 || seg.normal()) {
                     _edgeCells.emplace_back(region.min - 2 * w3, region.min + w3, slenOaxis + 1, region.min, +1);
@@ -1072,7 +1073,7 @@ std::vector<grid_detail::HullCutPoint> grid_detail::hullCutTracePoints(
                 return;
             }
         }
-        const double direction = std::atan2(inside.y() - boundary.y(), inside.x() - boundary.x()) * 180.0 / M_PI;
+        const double direction = std::atan2(inside.y() - boundary.y(), inside.x() - boundary.x()) * 180.0 / std::numbers::pi;
         const Position& start = trace.segment.start();
         const Position& stop = trace.segment.stop();
         const double alongX = stop.x() - start.x();
@@ -1436,7 +1437,7 @@ std::vector<grid_detail::CopperJoin> grid_detail::copperJoins(const std::vector<
             for (int sample = -1; sample < 2 * kRimSamples; ++sample) {
                 // Sample -1 is the first end's centre; then the rim round each end.
                 const bool secondEnd = sample >= kRimSamples;
-                const double angle = 2 * M_PI * (sample % kRimSamples) / kRimSamples;
+                const double angle = 2 * std::numbers::pi * (sample % kRimSamples) / kRimSamples;
                 const double r = sample < 0 ? 0.0 : barrel.radius;
                 const Position at((secondEnd ? barrel.x2 : barrel.x1) + r * std::cos(angle),
                                   (secondEnd ? barrel.y2 : barrel.y1) + r * std::sin(angle));

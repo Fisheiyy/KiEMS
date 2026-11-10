@@ -20,6 +20,15 @@
 #include <mach-o/dyld.h>
 #endif
 
+#if defined(_WIN32)
+namespace kiems_cli {
+// platform_win32.cpp
+std::filesystem::path currentExecutablePath();
+void addGnuplotToPathIfMissing();
+void reportUncaughtExceptions();
+}
+#endif
+
 #include "arguments.hpp"
 
 #include "kiems/config.hpp"
@@ -28,6 +37,7 @@
 #include "kiems/geometry_result.hpp"
 #include "kiems/importer.hpp"
 #include "logging.hpp"
+#include "kiems/path_utf8.hpp"
 #include "kiems/paths_config.hpp"
 #include "kiems/port_resolution.hpp"
 #include "kiems/postprocess_result.hpp"
@@ -71,6 +81,7 @@ void printUsage() {
                  "  -s, --simulate             Run simulation\n"
                  "  -p, --postprocess          Postprocess the data\n"
                  "  -a, --all                  Execute all steps (geometry, simulation, postprocessing)\n"
+                 "  --simulation NAME          Run only the named simulation (repeatable) [default: all]\n"
                  "  --export-field, --ef [...] [s] Export electric field data from the simulation\n"
                  "  --oversampling N           [s] Field dump time-oversampling (default: 4)\n"
                  "  --absorbing-boundary-cells N\n"
@@ -190,6 +201,11 @@ Arguments parseArguments(int argc, char** argv, DumpOptions& dumpOptions) {
             args.setTransparent(true);
         } else if (tok == "--plot-phase") {
             args.setPlotPhase(true);
+        } else if (tok == "--simulation") {
+            if (++i >= tokens.size()) {
+                missingValue(tok);
+            }
+            args.addSimulation(tokens[i]);
         } else if (tok == "-i" || tok == "--input") {
             if (++i >= tokens.size()) {
                 missingValue(tok);
@@ -287,6 +303,16 @@ void setupLogging(const Arguments& args) {
     setLogLevel(level);
 }
 
+#if defined(_WIN32)
+constexpr char kPathListSeparator = ';';
+constexpr const char* kExecutableSuffix = ".exe";
+constexpr const char* kKicadCliName = "kicad-cli.exe";
+#else
+constexpr char kPathListSeparator = ':';
+constexpr const char* kExecutableSuffix = "";
+constexpr const char* kKicadCliName = "kicad-cli";
+#endif
+
 // macOS's KiCad.app doesn't symlink kicad-cli anywhere on a typical PATH -- it ships only inside
 // the app bundle. Only the CLI is allowed to do this kind of PATH-scanning/fallback-guessing (a
 // sandboxed GUI can't, and libkiems itself never does -- see importer.hpp); it's a convenience
@@ -296,10 +322,10 @@ std::filesystem::path resolveKicadCli() {
     if (pathEnv != nullptr) {
         std::stringstream pathStream(pathEnv);
         std::string dir;
-        while (std::getline(pathStream, dir, ':')) {
+        while (std::getline(pathStream, dir, kPathListSeparator)) {
             std::error_code ec;
-            if (std::filesystem::is_regular_file(std::filesystem::path(dir) / "kicad-cli", ec)) {
-                return "kicad-cli";
+            if (std::filesystem::is_regular_file(std::filesystem::path(dir) / kKicadCliName, ec)) {
+                return kKicadCliName;
             }
         }
     }
@@ -313,7 +339,7 @@ std::filesystem::path resolveKicadCli() {
             return candidate;
         }
     }
-    return "kicad-cli"; // Let posix_spawnp's own error reporting handle the "truly not found" case.
+    return kKicadCliName; // Let the process launcher's own error reporting handle the "truly not found" case.
 }
 
 // Absolute path to the currently-running executable's directory.  Worker executables are sibling
@@ -336,6 +362,8 @@ std::filesystem::path executableDir() {
     }
     const std::filesystem::path resolved = std::filesystem::canonical(executable, ec);
     return (ec ? executable : resolved).parent_path();
+#elif defined(_WIN32)
+    return kiems_cli::currentExecutablePath().parent_path();
 #else
     return {};
 #endif
@@ -531,6 +559,10 @@ std::expected<std::uint32_t, std::string> dumpGPUPortInProcess(Simulation& sim, 
 } // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+    kiems_cli::reportUncaughtExceptions();
+    kiems_cli::addGnuplotToPathIfMissing();
+#endif
     DumpOptions dumpOptions;
     Arguments args = parseArguments(argc, argv, dumpOptions);
 
@@ -551,8 +583,8 @@ int main(int argc, char** argv) {
     }
 
     const PathsConfig paths = PathsConfig::forConfigFile(cfgPath, resolveKicadCli(),
-                                                          executableDir() / "kiems_fdtd_worker",
-                                                          executableDir() / "copper_fdtd_worker");
+                                                          executableDir() / (std::string("kiems_fdtd_worker") + kExecutableSuffix),
+                                                          executableDir() / (std::string("copper_fdtd_worker") + kExecutableSuffix));
 
     // Owned by main so the loaded KiCad board is torn down before main returns, while KiCad's own
     // process-wide state is still alive -- not from exit()'s static destructors.
@@ -590,6 +622,20 @@ int main(int argc, char** argv) {
     setupLogging(args);
     if (args.updateConfig()) {
         return EXIT_SUCCESS;
+    }
+    if (!args.simulations().empty()) {
+        // Only the named simulations, in the config's order. The config file itself is untouched:
+        // this happens after --update-config's write, and only to the in-memory copy.
+        for (const std::string& name : args.simulations()) {
+            const auto& all = config.simulations();
+            if (std::none_of(all.begin(), all.end(), [&](const SimulationConfig& s) { return s.name() == name; })) {
+                logError("No simulation named \"" + name + "\" in " + pathToUtf8(cfgPath));
+                return EXIT_FAILURE;
+            }
+        }
+        std::erase_if(config.simulations(), [&](const SimulationConfig& s) {
+            return std::find(args.simulations().begin(), args.simulations().end(), s.name()) == args.simulations().end();
+        });
     }
 
     if (!args.geometry() && !args.simulate() && !args.postprocess() && !args.all()) {

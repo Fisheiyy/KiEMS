@@ -131,8 +131,8 @@ Scripts/check_dependencies.py
 ```
 
 It checks out the submodules, checks each component's packages (Homebrew on
-macOS; APT, DNF, Pacman, or Zypper on Linux), prints the command that installs
-anything missing, then sets up and validates the build:
+macOS; APT, DNF, Pacman, or Zypper on Linux; winget and vcpkg on Windows),
+prints the command that installs anything missing, then sets up and validates the build:
 
 | Option | Effect |
 | --- | --- |
@@ -152,10 +152,12 @@ If you would rather install dependencies yourself, you need:
   Xcode and its command-line tools, plus Homebrew)
 - **KiEMS:** GEOS 3.10 or newer, Matplot++, gnuplot, and nlohmann-json
 - **Copper and CSXCAD:** HDF5, Blosc2, CGAL, Boost, GMP, MPFR, and VTK
-- **libkicad:** a source build of KiCad matching the pinned version, with its
-  dependencies (wxWidgets, GTK 3, GLM, Cairo, Pixman, FreeType, HarfBuzz,
-  OpenCASCADE, ngspice, libspnav, libgit2, NNG, zstd, Protobuf, Fontconfig,
-  GLU, and unixODBC)
+- **libkicad:** on macOS and Linux by default, a source build of KiCad matching
+  the pinned version, with its dependencies (wxWidgets, GTK 3, GLM, Cairo,
+  Pixman, FreeType, HarfBuzz, OpenCASCADE, ngspice, libspnav, libgit2, NNG,
+  zstd, Protobuf, Fontconfig, GLU, and unixODBC). On Windows -- or anywhere
+  with `-DLIBKICAD_BACKEND=stock` -- just an installed KiCad 10 or newer (see
+  the Windows section below).
 
 Per-distribution package names are listed in
 [`Dependencies/linux-packages.json`](Dependencies/linux-packages.json).
@@ -191,6 +193,63 @@ Once the dependencies are installed, configure and build with CMake:
 cmake --preset linux-release
 cmake --build --preset linux-release --target kiems-cli kiems_fdtd_worker copper_fdtd_worker
 ```
+
+#### Windows
+
+The command-line tools build on Windows with MSVC and vcpkg; MinGW/MSYS2 is not
+supported. Windows 10 version 1903 or newer is required.
+
+No KiCad build is needed. On Windows, libkicad uses its *stock* backend, which
+reads boards through an ordinary KiCad installation -- KiCad's own Python with
+its `pcbnew` module, and `kicad-cli` -- instead of linking KiCad's internals
+(see [`submodules/libkicad`](submodules/libkicad)). Install KiCad 10 or newer;
+`kiems` finds the newest one under `C:\Program Files\KiCad`, or set
+`LIBKICAD_KICAD_PYTHON` and `LIBKICAD_KICAD_CLI` to use another. Exporting
+footprints' 3D models isn't available with this backend yet; the command-line
+tools don't use it.
+
+1. Clone with long-path support turned on, preferably to a short path:
+
+   ```bat
+   git config --global core.longpaths true
+   git clone --recurse-submodules https://github.com/beelsebob/KiEMS.git C:\src\KiEMS
+   ```
+
+2. Install the tools. The dependency checker prints the `winget` commands for
+   anything missing (Visual Studio Build Tools with the C++ workload, KiCad and
+   gnuplot), and runs them with `--install`. Visual Studio 2026 is recommended;
+   2022 (17.6 or newer) also works, as does any edition with the "Desktop
+   development with C++" workload. Visual Studio's C++ workload includes CMake,
+   Ninja and vcpkg; its Developer prompt sets `VCPKG_ROOT` to that vcpkg.
+
+3. From Visual Studio's **x64 Native Tools Command Prompt**, run the checker. It
+   validates the setup by configuring CMake, and vcpkg builds the libraries in
+   the root `vcpkg.json` on the first run.
+
+   ```bat
+   python Scripts\check_dependencies.py
+   ```
+
+4. Build:
+
+   ```bat
+   cmake --preset windows-msvc-release
+   cmake --build --preset windows-msvc-release --target kiems-cli kiems_fdtd_worker copper_fdtd_worker
+   ```
+
+   The executables and every DLL they need are written to
+   `out\windows-msvc-release\bin`. `windows-msvc-debug` and
+   `windows-msvc-relwithdebinfo` are also available. Everything generated lives
+   under `out\`, which is safe to delete: vcpkg keeps the packages it has built
+   in its binary cache (`%LOCALAPPDATA%\vcpkg\archives`) and restores them
+   from there.
+
+Plots are drawn with gnuplot; `kiems` also finds it in gnuplot's standard
+install folder when it isn't on `PATH`.
+
+The stock backend also works on macOS and Linux (configure with
+`-DLIBKICAD_BACKEND=stock`), so those platforms can skip the KiCad source
+build too.
 
 `libkiems_tests` uses Apple's XCTest framework, so the test suite only runs on
 macOS.

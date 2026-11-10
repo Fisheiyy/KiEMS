@@ -17,6 +17,7 @@ copy is written back over the package on save, restoring the files.
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,7 +42,9 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="only report what would be deleted")
     args = parser.parse_args()
 
-    if not args.dry_run and subprocess.run(["pgrep", "-x", "KiEMS"], capture_output=True).returncode == 0:
+    # pgrep exists wherever the KiEMS app does (macOS); elsewhere there is no app to be running.
+    if not args.dry_run and shutil.which("pgrep") and \
+            subprocess.run(["pgrep", "-x", "KiEMS"], capture_output=True).returncode == 0:
         print("KiEMS is running; quit it first (an open document's save would undo this).", file=sys.stderr)
         return 1
 

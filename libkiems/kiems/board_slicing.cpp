@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 #include <unordered_set>
+#include <numbers>
 
 #include "config.hpp"
 #include "constants.hpp"
@@ -1056,7 +1057,7 @@ void reconcileHullCutPorts(SimulationConfig& simulation, const std::vector<HullC
         // configuration micrometres stored), exactly as the board view first placed it.
         const HullCut& placed = *cut->second;
         const double lengthSim = std::max(placed.width, 1.0);
-        const double radians = placed.inwardDirectionDegrees * M_PI / 180.0;
+        const double radians = placed.inwardDirectionDegrees * std::numbers::pi / 180.0;
         port.setNet(placed.netName);
         port.setLayer(placed.layerName);
         port.setX((placed.position.x() + std::cos(radians) * lengthSim / 2) / constants::unitMultiplier);

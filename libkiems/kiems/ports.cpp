@@ -8,6 +8,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <numbers>
 
 #include "csx_grid_utils.hpp"
 
@@ -68,7 +69,7 @@ void _fft(std::vector<std::complex<double>>& values, bool inverse) {
         }
     }
     for (std::size_t length = 2; length <= count; length <<= 1) {
-        const double angle = (inverse ? 2.0 : -2.0) * M_PI / static_cast<double>(length);
+        const double angle = (inverse ? 2.0 : -2.0) * std::numbers::pi / static_cast<double>(length);
         const std::complex<double> step(std::cos(angle), std::sin(angle));
         for (std::size_t start = 0; start < count; start += length) {
             std::complex<double> phase(1.0, 0.0);
@@ -131,24 +132,24 @@ public:
 
         std::vector<std::complex<double>> kernel(_fftSize, {0.0, 0.0});
         const auto unitPhase = [](double angle) {
-            const double reduced = std::remainder(angle, 2.0 * M_PI);
+            const double reduced = std::remainder(angle, 2.0 * std::numbers::pi);
             return std::complex<double>(std::cos(reduced), std::sin(reduced));
         };
         for (std::size_t n = 0; n < _inputCount; ++n) {
             const double nd = static_cast<double>(n);
-            _inputChirp[n] = unitPhase(-2.0 * M_PI * _frequencyStart * _timeStep * nd -
-                                       M_PI * _frequencyStep * _timeStep * nd * nd);
+            _inputChirp[n] = unitPhase(-2.0 * std::numbers::pi * _frequencyStart * _timeStep * nd -
+                                       std::numbers::pi * _frequencyStep * _timeStep * nd * nd);
         }
         for (std::size_t k = 0; k < _outputCount; ++k) {
             const double kd = static_cast<double>(k);
-            _outputChirp[k] = unitPhase(-2.0 * M_PI * (_frequencyStart + kd * _frequencyStep) * _timeStart -
-                                        M_PI * _frequencyStep * _timeStep * kd * kd);
+            _outputChirp[k] = unitPhase(-2.0 * std::numbers::pi * (_frequencyStart + kd * _frequencyStep) * _timeStart -
+                                        std::numbers::pi * _frequencyStep * _timeStep * kd * kd);
         }
         for (std::ptrdiff_t m = -static_cast<std::ptrdiff_t>(_inputCount - 1);
              m <= static_cast<std::ptrdiff_t>(_outputCount - 1); ++m) {
             const double md = static_cast<double>(m);
             kernel[static_cast<std::size_t>(m + static_cast<std::ptrdiff_t>(_inputCount - 1))] =
-                unitPhase(M_PI * _frequencyStep * _timeStep * md * md);
+                unitPhase(std::numbers::pi * _frequencyStep * _timeStep * md * md);
         }
         _fft(kernel, false);
         _kernelSpectrum = std::move(kernel);
@@ -218,7 +219,7 @@ std::expected<std::vector<std::complex<double>>, std::string> dftTimeToFreq(cons
         for (std::size_t nF = 0; nF < freq.size(); ++nF) {
             std::complex<double> sum(0, 0);
             for (std::size_t n = 0; n < t.size(); ++n) {
-                sum += val[n] * std::exp(std::complex<double>(0, -2 * M_PI * freq[nF] * t[n]));
+                sum += val[n] * std::exp(std::complex<double>(0, -2 * std::numbers::pi * freq[nF] * t[n]));
             }
             fVal[nF] = sum;
         }

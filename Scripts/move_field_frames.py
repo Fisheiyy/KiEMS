@@ -53,8 +53,11 @@ def write_manifest(sim_dir: Path, entries: list[tuple[int, Path]]) -> None:
 
 def copy_verified(source: Path, destination: Path) -> None:
     partial = destination.with_name(destination.name + ".partial")
-    # rsync resumes an interrupted copy of a very large file instead of starting over.
-    subprocess.run(["rsync", "--partial", "--inplace", "--progress", str(source), str(partial)], check=True)
+    if shutil.which("rsync"):
+        # rsync resumes an interrupted copy of a very large file instead of starting over.
+        subprocess.run(["rsync", "--partial", "--inplace", "--progress", str(source), str(partial)], check=True)
+    else:
+        shutil.copyfile(source, partial)
     if partial.stat().st_size != source.stat().st_size:
         raise RuntimeError(f"size mismatch copying {source} -> {partial}")
     os.replace(partial, destination)
@@ -69,7 +72,9 @@ def main() -> int:
                         help="delete loose frame files no manifest references")
     args = parser.parse_args()
 
-    if not args.dry_run and subprocess.run(["pgrep", "-x", "KiEMS"], capture_output=True).returncode == 0:
+    # pgrep exists wherever the KiEMS app does (macOS); elsewhere there is no app to be running.
+    if not args.dry_run and shutil.which("pgrep") and \
+            subprocess.run(["pgrep", "-x", "KiEMS"], capture_output=True).returncode == 0:
         print("KiEMS is running; quit it first (an open document's save would undo this).", file=sys.stderr)
         return 1
 

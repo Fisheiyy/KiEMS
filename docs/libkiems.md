@@ -11,7 +11,7 @@ through three pipeline stages:
    eye-diagram data, and save or plot it.
 
 Everything lives in the `kiems` namespace, and the headers are under
-[`libkiems/kiems/`](../libkiems/kiems/). The library builds on macOS and Linux.
+[`libkiems/kiems/`](../libkiems/kiems/). The library builds on macOS, Linux and Windows.
 
 ## Building and linking
 

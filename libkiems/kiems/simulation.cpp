@@ -16,24 +16,92 @@
 #include <sstream>
 #include <utility>
 
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <spawn.h>
 #include <sys/wait.h>
+#endif
 
 #include <nlohmann/json.hpp>
+#include <numbers>
 
 #include "constants.hpp"
 #include "csx_grid_utils.hpp"
 #include "libkicad/libkicad.hpp"
 #include "board_slicing.hpp"
 #include "logging.hpp"
+#include "path_utf8.hpp"
 
+#if !defined(_WIN32)
 extern char** environ;
+#endif
 
 namespace kiems {
 
 using namespace Cu;
 
 namespace {
+
+#if defined(_WIN32)
+// Quotes one argument so the child's CommandLineToArgvW (which the C runtime uses to build argv)
+// reproduces it exactly: _wspawnv itself just joins its arguments with spaces.
+std::wstring _quoteWindowsArgument(const std::wstring& argument) {
+    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+        return argument;
+    }
+    std::wstring quoted = L"\"";
+    for (auto it = argument.begin();; ++it) {
+        std::size_t backslashes = 0;
+        while (it != argument.end() && *it == L'\\') {
+            ++it;
+            ++backslashes;
+        }
+        if (it == argument.end()) {
+            // Backslashes before the closing quote must be doubled so they stay literal.
+            quoted.append(backslashes * 2, L'\\');
+            break;
+        }
+        if (*it == L'"') {
+            quoted.append(backslashes * 2 + 1, L'\\');
+        } else {
+            quoted.append(backslashes, L'\\');
+        }
+        quoted.push_back(*it);
+    }
+    quoted.push_back(L'"');
+    return quoted;
+}
+#endif
+
+/// Runs `executable` with `argument` and waits for it. Returns whether it exited normally with
+/// status 0, or a description of why it could not be run at all.
+std::expected<bool, std::string> _runWorkerAndWait(const std::filesystem::path& executable,
+                                                   const std::filesystem::path& argument) {
+#if defined(_WIN32)
+    const std::wstring executableArg = _quoteWindowsArgument(executable.wstring());
+    const std::wstring argumentArg = _quoteWindowsArgument(argument.wstring());
+    const std::array<const wchar_t*, 3> argv = {executableArg.c_str(), argumentArg.c_str(), nullptr};
+    const intptr_t status = ::_wspawnv(_P_WAIT, executable.c_str(), argv.data());
+    if (status == -1) {
+        return std::unexpected("Failed to spawn FDTD worker (" + pathToUtf8(executable) + "): " + std::strerror(errno));
+    }
+    return status == 0;
+#else
+    std::string workerPathStr = executable.string();
+    std::string jobPathStr = argument.string();
+    std::array<char*, 3> argv = {workerPathStr.data(), jobPathStr.data(), nullptr};
+    pid_t pid = 0;
+    if (posix_spawn(&pid, workerPathStr.c_str(), nullptr, nullptr, argv.data(), environ) != 0) {
+        return std::unexpected("Failed to spawn FDTD worker (" + workerPathStr + "): " + std::strerror(errno));
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return std::unexpected("waitpid failed: " + std::string(std::strerror(errno)));
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#endif
+}
 
 std::string _point3ToString(const Point3& p) {
     return "[" + std::to_string(p[0]) + ", " + std::to_string(p[1]) + ", " + std::to_string(p[2]) + "]";
@@ -74,7 +142,7 @@ double _cornerBridgeZ(double padZ, std::int32_t layer) {
 double _lossTangentToKappa(double epsilon, double lossTangent) {
     constexpr double kLossTangentFrequencyHz = 2.5e9;
     constexpr double kVacuumPermittivity = 8.85418781762e-12; // F/m
-    return 2 * M_PI * kLossTangentFrequencyHz * kVacuumPermittivity * epsilon * lossTangent;
+    return 2 * std::numbers::pi * kLossTangentFrequencyHz * kVacuumPermittivity * epsilon * lossTangent;
 }
 
 // Standard ray-casting point-in-polygon test against a simple closed loop.
@@ -195,7 +263,7 @@ std::pair<std::vector<double>, std::vector<double>> _viaPolygon(double x1, doubl
     if (x1 == x2 && y1 == y2) {
         for (std::int32_t step = 0; step < segments; ++step) {
             const std::int32_t i = reversed ? segments - 1 - step : step;
-            const double angle = static_cast<double>(i) / segments * 2 * M_PI;
+            const double angle = static_cast<double>(i) / segments * 2 * std::numbers::pi;
             xs.push_back(x1 + std::sin(angle) * radius);
             ys.push_back(y1 + std::cos(angle) * radius);
         }
@@ -213,12 +281,12 @@ std::pair<std::vector<double>, std::vector<double>> _viaPolygon(double x1, doubl
     // the same way the plain-circle case above never explicitly closes its own loop (CSXCAD's
     // polygon primitives connect the last point back to the first).
     for (std::int32_t i = 0; i < halfSegments; ++i) {
-        const double a = lineAngle - M_PI / 2 + M_PI * static_cast<double>(i) / angleDenominator;
+        const double a = lineAngle - std::numbers::pi / 2 + std::numbers::pi * static_cast<double>(i) / angleDenominator;
         xs.push_back(x2 + std::cos(a) * radius);
         ys.push_back(y2 + std::sin(a) * radius);
     }
     for (std::int32_t i = 0; i < halfSegments; ++i) {
-        const double a = lineAngle + M_PI / 2 + M_PI * static_cast<double>(i) / angleDenominator;
+        const double a = lineAngle + std::numbers::pi / 2 + std::numbers::pi * static_cast<double>(i) / angleDenominator;
         xs.push_back(x1 + std::cos(a) * radius);
         ys.push_back(y1 + std::sin(a) * radius);
     }
@@ -661,7 +729,7 @@ std::expected<void, std::string> Simulation::addMslPort(PortConfig& portConfig, 
     }
     const double startZ = *startZResult;
     const double stopZ = *stopZResult;
-    const double angle = *portConfig.direction() / 360.0 * 2 * M_PI;
+    const double angle = *portConfig.direction() / 360.0 * 2 * std::numbers::pi;
     const auto [posX, posY] = *portConfig.position();
     const double width = portConfig.width();
     const double length = portConfig.length();
@@ -725,7 +793,7 @@ std::expected<void, std::string> Simulation::addImpedanceProbe(PortConfig& portC
     }
     const double startZ = *startZResult;
     const double stopZ = *stopZResult;
-    const double angle = *portConfig.direction() / 360.0 * 2 * M_PI;
+    const double angle = *portConfig.direction() / 360.0 * 2 * std::numbers::pi;
     const auto [posX, posY] = *portConfig.position();
     const double width = portConfig.width();
     const double length = portConfig.length();
@@ -830,7 +898,7 @@ std::expected<std::pair<Point3, Point3>, std::string> Simulation::padColumn(cons
     }
     const double startZ = *startZResult;
     const double stopZ = *stopZResult;
-    const double angle = *portConfig.direction() / 360.0 * 2 * M_PI;
+    const double angle = *portConfig.direction() / 360.0 * 2 * std::numbers::pi;
     const auto [posX, posY] = *portConfig.position();
     const double width = portConfig.width();
 
@@ -1554,14 +1622,14 @@ std::expected<void, std::string> Simulation::run(std::int32_t excitedPortNumber)
     // saved geometry from, and which port to excite.
     const std::filesystem::path jobPath = simPath / "job.json";
     nlohmann::json job;
-    job["config_path"] = _paths.configFile.string();
+    job["config_path"] = pathToUtf8(_paths.configFile);
     job["simulation_name"] = _simConfig.name();
     job["excited_port"] = excitedPortNumber;
     job["oversampling"] = _options.oversampling;
     {
         std::ofstream jobFile(jobPath);
         if (!jobFile) {
-            return std::unexpected("Failed to write job file: " + jobPath.string());
+            return std::unexpected("Failed to write job file: " + pathToUtf8(jobPath));
         }
         jobFile << job.dump();
     }
@@ -1574,18 +1642,11 @@ std::expected<void, std::string> Simulation::run(std::int32_t excitedPortNumber)
 
     const std::filesystem::path& workerPath =
         (_options.backend == FDTDBackend::CopperGPU) ? _paths.copperFdtdWorkerPath : _paths.fdtdWorkerPath;
-    std::string workerPathStr = workerPath.string();
-    std::string jobPathStr = jobPath.string();
-    std::array<char*, 3> argv = {workerPathStr.data(), jobPathStr.data(), nullptr};
-    pid_t pid = 0;
-    if (posix_spawn(&pid, workerPathStr.c_str(), nullptr, nullptr, argv.data(), environ) != 0) {
-        return std::unexpected("Failed to spawn FDTD worker (" + workerPathStr + "): " + std::strerror(errno));
+    const std::expected<bool, std::string> succeeded = _runWorkerAndWait(workerPath, jobPath);
+    if (!succeeded) {
+        return std::unexpected(succeeded.error());
     }
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
-        return std::unexpected("waitpid failed: " + std::string(std::strerror(errno)));
-    }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (!*succeeded) {
         std::ifstream errFile(errorPath);
         if (errFile) {
             std::stringstream buffer;
@@ -1594,7 +1655,7 @@ std::expected<void, std::string> Simulation::run(std::int32_t excitedPortNumber)
                 return std::unexpected(buffer.str());
             }
         }
-        return std::unexpected("FDTD worker exited with an error (no message written to " + errorPath.string() + ")");
+        return std::unexpected("FDTD worker exited with an error (no message written to " + pathToUtf8(errorPath) + ")");
     }
     return {};
 }
@@ -2080,7 +2141,7 @@ std::expected<void, std::string> Simulation::addLumpedComponents() {
                                             "'s corner-bridge leg direction is not a multiple of 90 degrees");
                 }
                 const std::int32_t axisIndex = dirIt->second == "x" ? 0 : 1;
-                const double angle = direction / 360.0 * 2 * M_PI;
+                const double angle = direction / 360.0 * 2 * std::numbers::pi;
                 const double width = component.width();
                 const auto [x1, y1] = from;
                 const auto [x2, y2] = to;
@@ -2140,7 +2201,7 @@ std::expected<void, std::string> Simulation::addLumpedComponents() {
             return std::unexpected(zResult.error());
         }
         const double z = std::round(*zResult);
-        const double angle = component.direction() / 360.0 * 2 * M_PI;
+        const double angle = component.direction() / 360.0 * 2 * std::numbers::pi;
         const double width = component.width();
         const auto [x1, y1] = component.position1();
         const auto [x2, y2] = component.position2();
@@ -2202,7 +2263,7 @@ std::expected<void, std::string> Simulation::addPassiveProbe(PortConfig& portCon
     }
     const double startZ = *startZResult;
     const double stopZ = *stopZResult;
-    const double angle = *portConfig.direction() / 360.0 * 2 * M_PI;
+    const double angle = *portConfig.direction() / 360.0 * 2 * std::numbers::pi;
     const auto [posX, posY] = *portConfig.position();
     const double width = portConfig.width();
 

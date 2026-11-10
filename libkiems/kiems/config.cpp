@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <numbers>
 
 #include "constants.hpp"
 #include "logging.hpp"
@@ -72,7 +73,7 @@ void PortConfig::scaleToSimulationUnits(std::int32_t unitMultiplier) {
 }
 
 PortGridFootprint portGridFootprint(const PortConfig& port) {
-    const double angle = *port.direction() / 360.0 * 2 * M_PI;
+    const double angle = *port.direction() / 360.0 * 2 * std::numbers::pi;
     const auto [posX, posY] = *port.position();
     const double widthDirX = -std::sin(angle);
     const double widthDirY = std::cos(angle);

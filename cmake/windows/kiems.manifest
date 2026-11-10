@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded in the Windows kiems, kiems_fdtd_worker and copper_fdtd_worker executables (see the root
+     CMakeLists.txt). activeCodePage makes the process ANSI code page UTF-8 (Windows 10 1903 and
+     later), so argv, std::filesystem::path's narrow conversions and every narrow file API agree
+     with the UTF-8 that macOS and Linux use. longPathAware lifts the 260-character MAX_PATH limit
+     where the system has long paths enabled. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

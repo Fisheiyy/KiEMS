@@ -1,4 +1,6 @@
 build/
+# Windows preset build trees and vcpkg packages (CMakePresets.json windows-* presets)
+/out/
 xcuserdata/
 __pycache__/
 *.pyc

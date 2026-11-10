@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Checks everything kiems builds against, on macOS or Linux, and optionally installs what is
-missing.
+"""Checks everything kiems builds against, on macOS, Linux or Windows, and optionally installs
+what is missing.
 
 Usage: Scripts/check_dependencies.py [--component NAME]... [--install [--yes]] [--no-configure] [--ssh]
   --component   check only build, kiems, copper or libkicad; repeatable; omit to check everything
@@ -21,7 +21,8 @@ dependency_tool.py for how repositories cooperate. When every component has been
 up, writes the untracked Config/DependenciesChecked.generated.h; until it exists every Xcode
 compile stops with an #error from Config/DependencyCheck.h. The script never runs from Xcode.
 
-On Linux the work is done by linux_dependencies.py, from Dependencies/linux-packages.json.
+On Linux the work is done by linux_dependencies.py, from Dependencies/linux-packages.json. On
+Windows it is done by windows_dependencies.py: tools from winget, libraries from vcpkg (vcpkg.json).
 """
 import argparse
 import subprocess
@@ -116,7 +117,7 @@ def macos_main(args: argparse.Namespace) -> int:
         level = next_level
 
     selected = [child for child in me.children
-                if SUBMODULE_COMPONENTS.get(str(child.root.relative_to(ctx.root))) in requested]
+                if SUBMODULE_COMPONENTS.get(child.root.relative_to(ctx.root).as_posix()) in requested]
     formulas = (BUILD_HOMEBREW if "build" in requested else []) + \
                (HOMEBREW if "kiems" in requested else []) + \
                [f for child in selected for c in tool.walk(child) for f in c.homebrew]
@@ -175,8 +176,11 @@ def main() -> int:
     if sys.platform.startswith("linux"):
         import linux_dependencies
         return linux_dependencies.main(args, parser)
+    if sys.platform == "win32":
+        import windows_dependencies
+        return windows_dependencies.main(args, parser)
     if sys.platform != "darwin":
-        parser.error(f"unsupported platform {sys.platform}; KiEMS builds on macOS and Linux")
+        parser.error(f"unsupported platform {sys.platform}; KiEMS builds on macOS, Linux and Windows")
     return macos_main(args)
 
 

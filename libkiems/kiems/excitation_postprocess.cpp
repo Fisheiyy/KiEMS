@@ -10,6 +10,7 @@
 #include <matplot/matplot.h>
 
 #include "logging.hpp"
+#include "path_utf8.hpp"
 
 namespace kiems {
 
@@ -35,7 +36,10 @@ void _saveFigure(const matplot::figure_handle& fig, const std::filesystem::path&
     if (transparent) {
         fig->color({0.0F, 1.0F, 1.0F, 1.0F});
     }
-    fig->save(path.string());
+    // Matplot++ embeds the name in a gnuplot double-quoted string, where a backslash starts an
+    // escape sequence, so native Windows separators (as in "C:\new\temp") would become
+    // control characters. Forward slashes work everywhere, and are what macOS and Linux already use.
+    fig->save(pathToGenericUtf8(path));
 }
 
 } // namespace

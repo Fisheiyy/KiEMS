@@ -12,12 +12,36 @@ if(APPLE AND EXISTS "/opt/homebrew")
     list(PREPEND CMAKE_PREFIX_PATH "/opt/homebrew")
 endif()
 
+if(MSVC AND MSVC_VERSION LESS 1936)
+    message(FATAL_ERROR "KiEMS needs Visual Studio 2022 17.6 (MSVC 19.36) or newer for its C++23 library features.")
+endif()
+
+# Windows toolchain settings, applied before the submodules are added so they inherit them. They
+# match what KiCad's own Windows build uses, so code compiled against KiCad's (and CSXCAD's)
+# headers sees the same environment. Nothing here applies on macOS or Linux.
+if(MSVC)
+    add_compile_options(/utf-8 /bigobj /Zc:__cplusplus)
+    add_compile_definitions(NOMINMAX _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+elseif(MINGW)
+    add_compile_options(-Wa,-mbig-obj)
+    add_compile_definitions(_USE_MATH_DEFINES)
+endif()
+
+# Windows has no RPATH: an executable finds its DLLs next to itself. Put every binary in one
+# directory so the CLI, its sibling workers and their DLLs run straight from the build tree.
+if(WIN32)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
+
 find_package(nlohmann_json REQUIRED)
 find_package(GEOS REQUIRED)
 find_package(Matplot++ QUIET CONFIG)
 if(NOT Matplot++_FOUND)
     message(FATAL_ERROR
         "KiEMS requires Matplot++, but CMake could not find it.\n"
+        "\n"
+        "On Windows, configure with a windows-msvc-* preset: vcpkg then installs Matplot++ from the "
+        "root vcpkg.json.\n"
         "\n"
         "Ubuntu does not package Matplot++ consistently. Install it from source, then rerun CMake:\n"
         "  git clone --depth 1 https://github.com/alandefreitas/matplotplusplus.git\n"
@@ -77,6 +101,17 @@ function(add_kiems_tool target source)
     target_link_libraries(${target} PRIVATE libkiems Copper libkicad)
     if(APPLE)
         set_target_properties(${target} PROPERTIES INSTALL_RPATH "@loader_path")
+    elseif(WIN32)
+        if(MSVC)
+            # UTF-8 process code page and long-path awareness; see the manifest's own comment.
+            target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/kiems.manifest")
+        endif()
+        # Copy the DLLs of imported dependencies that vcpkg's own app-local deployment doesn't
+        # cover (KiCad's kicommon, kigal, kiapi and kicad_3dsg) next to the executable.
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E $<IF:$<BOOL:$<TARGET_RUNTIME_DLLS:${target}>>,copy_if_different,true>
+                    $<TARGET_RUNTIME_DLLS:${target}> "$<TARGET_FILE_DIR:${target}>"
+            COMMAND_EXPAND_LISTS)
     else()
         set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN")
     endif()
@@ -84,6 +119,9 @@ endfunction()
 
 add_kiems_tool(kiems-cli "${CMAKE_CURRENT_SOURCE_DIR}/kiems-cli/main.cpp")
 set_target_properties(kiems-cli PROPERTIES OUTPUT_NAME kiems)
+if(WIN32)
+    target_sources(kiems-cli PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/kiems-cli/platform_win32.cpp")
+endif()
 add_kiems_tool(kiems_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/kiems_fdtd_worker/main.cpp")
 add_kiems_tool(copper_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/copper_fdtd_worker/main.cpp")
 
@@ -113,3 +151,11 @@ install(TARGETS libkiems kiems-cli kiems_fdtd_worker copper_fdtd_worker
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if(WIN32)
+    # The executables load their DLLs from their own directory. vcpkg installs its packages' DLLs
+    # (X_VCPKG_APPLOCAL_DEPS_INSTALL in the Windows presets); install KiCad's alongside them.
+    get_property(KIEMS_LIBKICAD_RUNTIME_DLLS GLOBAL PROPERTY LIBKICAD_RUNTIME_DLLS)
+    if(KIEMS_LIBKICAD_RUNTIME_DLLS)
+        install(FILES ${KIEMS_LIBKICAD_RUNTIME_DLLS} DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    endif()
+endif()

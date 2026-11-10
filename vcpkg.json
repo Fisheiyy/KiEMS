@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "kiems",
+  "version": "0.0.0",
+  "$comment": "Windows (MSVC) libraries for KiEMS, Copper and CSXCAD, used by the windows-msvc-* CMake presets. KiCad itself is not built: on Windows libkicad's stock backend reads boards through an installed KiCad (see submodules/libkicad). macOS and Linux do not use this file.",
+  "dependencies": [
+    "blosc2",
+    "cgal",
+    "geos",
+    {
+      "name": "hdf5",
+      "features": [
+        "hl"
+      ]
+    },
+    "matplotplusplus",
+    "nlohmann-json",
+    {
+      "name": "vtk",
+      "default-features": false
+    }
+  ]
+}

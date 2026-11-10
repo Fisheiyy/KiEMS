@@ -631,7 +631,7 @@ std::vector<TraceSegment> AperturePolygon::_contours() {
     const double d2 = _diameter;
     for (std::int32_t i = 0; i < _vertices; ++i) {
         const double angleDegrees = _rotation + 360.0 * static_cast<double>(i) / static_cast<double>(_vertices);
-        const double angle = angleDegrees * (M_PI / 180.0);
+        const double angle = angleDegrees * (std::numbers::pi / 180.0);
         points.emplace_back(d2 * std::cos(angle), d2 * std::sin(angle));
     }
     return _pointsToOutline(points);
@@ -643,7 +643,7 @@ std::vector<std::vector<Position>> AperturePolygon::_toPolygon(double /*tessella
     const double d2 = _diameter;
     for (std::int32_t i = 0; i < _vertices; ++i) {
         const double angleDegrees = _rotation + 360.0 * static_cast<double>(i) / static_cast<double>(_vertices);
-        const double angle = angleDegrees * (M_PI / 180.0);
+        const double angle = angleDegrees * (std::numbers::pi / 180.0);
         points.emplace_back(d2 * std::cos(angle), d2 * std::sin(angle));
     }
     return {points};
@@ -846,7 +846,7 @@ ApertureMacro::ApertureMacro(const std::vector<std::string>& definitionLines) {
                 const double outerRadius = param.at(2) * _fileFormatScale() / 2;
                 const double innerRadius = param.at(3) * _fileFormatScale() / 2;
                 const double gapThickness = param.at(4) * _fileFormatScale();
-                const double rotation = param.at(5) * (M_PI / 180.0);
+                const double rotation = param.at(5) * (std::numbers::pi / 180.0);
                 const double meanRadius = (outerRadius + innerRadius) / 2;
                 const double gapHalfAngle = meanRadius > 0 ? std::atan(gapThickness / 2 / meanRadius) : 0;
                 // Fixed, coarse tolerance -- this TraceSegment-chain path only ever feeds
@@ -879,7 +879,7 @@ ApertureMacro::ApertureMacro(const std::vector<std::string>& definitionLines) {
                     const double outerRadius = param.at(2) * _fileFormatScale() / 2;
                     const double innerRadius = param.at(3) * _fileFormatScale() / 2;
                     const double gapThickness = param.at(4) * _fileFormatScale();
-                    const double rotation = param.at(5) * (M_PI / 180.0);
+                    const double rotation = param.at(5) * (std::numbers::pi / 180.0);
                     const double meanRadius = (outerRadius + innerRadius) / 2;
                     const double gapHalfAngle = meanRadius > 0 ? std::atan(gapThickness / 2 / meanRadius) : 0;
                     return _thermalQuadrantLoop(centerX, centerY, outerRadius, innerRadius, gapHalfAngle, quadrant,

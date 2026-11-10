@@ -11,9 +11,11 @@
 #include <sstream>
 
 #include <matplot/matplot.h>
+#include <numbers>
 
 #include "config.hpp"
 #include "logging.hpp"
+#include "path_utf8.hpp"
 
 namespace kiems {
 
@@ -30,12 +32,12 @@ std::string _probePath(std::int32_t probe) { return "Probe" + std::to_string(pro
 std::vector<double> _unwrap(std::vector<double> phase) {
     for (std::size_t i = 1; i < phase.size(); ++i) {
         double d = phase[i] - phase[i - 1];
-        while (d > M_PI) {
-            phase[i] -= 2 * M_PI;
+        while (d > std::numbers::pi) {
+            phase[i] -= 2 * std::numbers::pi;
             d = phase[i] - phase[i - 1];
         }
-        while (d < -M_PI) {
-            phase[i] += 2 * M_PI;
+        while (d < -std::numbers::pi) {
+            phase[i] += 2 * std::numbers::pi;
             d = phase[i] - phase[i - 1];
         }
     }
@@ -75,7 +77,10 @@ void _saveFigure(const matplot::figure_handle& fig, const std::filesystem::path&
         // alpha=0 figure colour approximates it when the PNG terminal supports alpha.
         fig->color({0.0F, 1.0F, 1.0F, 1.0F});
     }
-    fig->save(path.string());
+    // Matplot++ embeds the name in a gnuplot double-quoted string, where a backslash starts an
+    // escape sequence, so native Windows separators (as in "C:\new\temp") would become
+    // control characters. Forward slashes work everywhere, and are what macOS and Linux already use.
+    fig->save(pathToGenericUtf8(path));
 }
 
 std::string _sLabel(std::int32_t j, std::int32_t i) {
@@ -90,7 +95,7 @@ std::string _sLabel(std::int32_t j, std::int32_t i) {
 std::vector<double> unwrapPhaseDegrees(const std::vector<std::complex<double>>& values) {
     std::vector<double> phaseDeg = _unwrap(_angles(values));
     for (double& v : phaseDeg) {
-        v = v * 180.0 / M_PI;
+        v = v * 180.0 / std::numbers::pi;
     }
     return phaseDeg;
 }
@@ -255,7 +260,7 @@ void Postprocessor::processData() {
             for (std::size_t f = 0; f + 1 < _frequencies.size(); ++f) {
                 const double dPhase = phase[f + 1] - phase[f];
                 const double dFreq = _frequencies[f + 1] - _frequencies[f];
-                groupDelay[f] = -(dPhase / dFreq) / 2 / M_PI;
+                groupDelay[f] = -(dPhase / dFreq) / 2 / std::numbers::pi;
             }
             if (_frequencies.size() >= 2) {
                 groupDelay[_frequencies.size() - 1] = groupDelay[_frequencies.size() - 2];
@@ -438,7 +443,7 @@ std::optional<Postprocessor::DiffPairImpedance> Postprocessor::getDiffPairImpeda
             0.5 * (_sParams[sp][sp][f] - _sParams[sn][sp][f] - _sParams[sp][sn][f] + _sParams[sn][sn][f]);
         const std::complex<double> impedance = (2.0 * z0) * (1.0 + gamma) / (1.0 - gamma);
         result.magnitudeOhm[f] = std::abs(impedance);
-        result.angleDeg[f] = std::arg(impedance) * 180.0 / M_PI;
+        result.angleDeg[f] = std::arg(impedance) * 180.0 / std::numbers::pi;
     }
     return result;
 }
@@ -513,7 +518,7 @@ void Postprocessor::renderImpedance(bool transparent, const std::filesystem::pat
         std::vector<double> angleDeg(impedance.size());
         for (std::size_t f = 0; f < impedance.size(); ++f) {
             mag[f] = std::abs(impedance[f]);
-            angleDeg[f] = std::arg(impedance[f]) * 180.0 / M_PI;
+            angleDeg[f] = std::arg(impedance[f]) * 180.0 / std::numbers::pi;
         }
 
         auto fig = _newFigure();
@@ -599,7 +604,7 @@ void Postprocessor::renderSmith(bool transparent, const std::filesystem::path& o
         std::vector<double> circleX;
         std::vector<double> circleY;
         for (std::int32_t d = 0; d <= 360; ++d) {
-            const double a = static_cast<double>(d) * M_PI / 180.0;
+            const double a = static_cast<double>(d) * std::numbers::pi / 180.0;
             circleX.push_back(std::cos(a));
             circleY.push_back(std::sin(a));
         }
@@ -612,7 +617,7 @@ void Postprocessor::renderSmith(bool transparent, const std::filesystem::path& o
             const double radius = 1 / (1 + resistance);
             const double center = resistance / (1 + resistance);
             for (std::int32_t d = 0; d <= 360; ++d) {
-                const double angle = static_cast<double>(d) * M_PI / 180.0;
+                const double angle = static_cast<double>(d) * std::numbers::pi / 180.0;
                 x.push_back(center + radius * std::cos(angle));
                 y.push_back(radius * std::sin(angle));
             }
@@ -646,7 +651,7 @@ void Postprocessor::renderSmith(bool transparent, const std::filesystem::path& o
         std::vector<double> vswrX;
         std::vector<double> vswrY;
         for (std::int32_t d = 0; d <= 360; ++d) {
-            const double a = static_cast<double>(d) * M_PI / 180.0;
+            const double a = static_cast<double>(d) * std::numbers::pi / 180.0;
             vswrX.push_back(vswrGamma * std::cos(a));
             vswrY.push_back(vswrGamma * std::sin(a));
         }
@@ -990,7 +995,7 @@ std::expected<void, std::string> Postprocessor::loadSparams(const std::filesyste
             }
             const bool degrees = phDegrees.at(sxx);
             for (std::size_t r = 0; r < rows.size(); ++r) {
-                const double phase = degrees ? rows[r][argIt->second] * M_PI / 180.0 : rows[r][argIt->second];
+                const double phase = degrees ? rows[r][argIt->second] * std::numbers::pi / 180.0 : rows[r][argIt->second];
                 _sParams[static_cast<std::size_t>(sxx.first)][static_cast<std::size_t>(sxx.second)][r] =
                     std::polar(rows[r][col], phase);
             }

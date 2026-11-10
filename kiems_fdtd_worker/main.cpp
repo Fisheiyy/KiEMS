@@ -1,7 +1,7 @@
 // A dedicated, single-purpose process that runs exactly one port's FDTD pass on Copper's CPU
 // engine and exits -- the CPU sibling of copper_fdtd_worker (see that target's own main.cpp,
 // which this one mirrors closely; the two differ only in which copper::runFDTDPortOn{CPU,GPU}()
-// they call). Spawned by Simulation::run() (see simulation.hpp/.cpp) via posix_spawn when
+// they call). Spawned by Simulation::run() (see simulation.hpp/.cpp) as a child process when
 // RunOptions::backend == FDTDBackend::OpenEMSCPU -- that enumerator's name is a historical holdover
 // from when this worker ran openEMS's own Engine::RunFDTD() directly; it now runs Copper's own CPU
 // backend instead (see kiems::Simulation's own doc comments for why the real CPU stepping loop is
@@ -26,6 +26,7 @@
 #include "kiems/constants.hpp"
 #include "kiems/importer.hpp"
 #include "kiems/paths_config.hpp"
+#include "kiems/path_utf8.hpp"
 #include "kiems/port_resolution.hpp"
 #include "kiems/simulation.hpp"
 #include "kiems/simulation_data.hpp"
@@ -53,7 +54,7 @@ int main(int argc, char** argv) {
 
     std::ifstream jobFile(jobPath);
     if (!jobFile.is_open()) {
-        writeError(simPath, "Could not open job file: " + jobPath.string());
+        writeError(simPath, "Could not open job file: " + pathToUtf8(jobPath));
         return EXIT_FAILURE;
     }
     nlohmann::json job;
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
     std::string simName;
     std::int32_t excitedPort = 0;
     try {
-        configPath = job.at("config_path").get<std::string>();
+        configPath = pathFromUtf8(job.at("config_path").get<std::string>());
         simName = job.at("simulation_name").get<std::string>();
         excitedPort = job.at("excited_port").get<std::int32_t>();
     } catch (const nlohmann::json::exception& error) {
@@ -120,7 +121,7 @@ int main(int argc, char** argv) {
         }
     }
     if (simConfig == nullptr) {
-        writeError(simPath, "Simulation \"" + simName + "\" not found in " + configPath.string());
+        writeError(simPath, "Simulation \"" + simName + "\" not found in " + pathToUtf8(configPath));
         return EXIT_FAILURE;
     }
 
@@ -188,7 +189,7 @@ int main(int argc, char** argv) {
     for (const copper::CopperProbeResult& probeResult : cpuResult.probes) {
         std::ofstream probeFile(probeDir / probeResult.name);
         if (!probeFile.is_open()) {
-            writeError(simPath, "Failed to open probe file for writing: " + (probeDir / probeResult.name).string());
+            writeError(simPath, "Failed to open probe file for writing: " + pathToUtf8(probeDir / probeResult.name));
             return EXIT_FAILURE;
         }
         probeFile << probeResult.data();

@@ -77,8 +77,27 @@ std::expected<void, std::string> _mirrorProject(const std::filesystem::path& sou
             continue;
         } else if (entry.is_directory()) {
             std::filesystem::create_directory_symlink(path, target, ec);
+#if defined(_WIN32)
+            // Creating symlinks on Windows needs Developer Mode or elevation; copy instead.
+            if (ec) {
+                ec.clear();
+                std::filesystem::copy(path, target, std::filesystem::copy_options::recursive, ec);
+            }
+#endif
         } else {
             std::filesystem::create_symlink(path, target, ec);
+#if defined(_WIN32)
+            // Without symlink rights, a hard link (same volume, no privilege needed) is the closest
+            // equivalent, and a copy the last resort.
+            if (ec) {
+                ec.clear();
+                std::filesystem::create_hard_link(path, target, ec);
+            }
+            if (ec) {
+                ec.clear();
+                std::filesystem::copy_file(path, target, ec);
+            }
+#endif
         }
         if (ec) return std::unexpected("Couldn't snapshot " + path.string() + ": " + ec.message());
     }
