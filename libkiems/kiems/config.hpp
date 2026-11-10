@@ -1041,6 +1041,7 @@ public:
     LayerConfig(LayerKind kind, std::string name, double thicknessMm, double epsilon = 0, double lossTangent = 0);
 
     LayerKind kind() const { return _kind; }
+    /// In whole simulation units (rounded), so stacked layer boundaries fall exactly on mesh lines.
     double thickness() const { return _thickness; }
     const std::string& name() const { return _name; }
     const std::string& file() const { return _file; }  // only meaningful when kind() == Metal

@@ -539,7 +539,11 @@ void from_json(const nlohmann::json& j, SingleEndedConfig& p) {
 }
 
 LayerConfig::LayerConfig(LayerKind kind, std::string name, double thicknessMm, double epsilon, double lossTangent)
-    : _kind(kind), _thickness(thicknessMm / 1000 / constants::baseUnit * constants::unitMultiplier),
+    // Whole simulation units: every layer's z is a sum of these, and must land exactly on the
+    // integer z mesh lines (grid_gen.cpp truncates every line to an integer). Unrounded, 1.51 mm
+    // becomes 15100.000000000002, a zero-thickness copper sheet at that z sits just off its mesh
+    // line, and the solver drops the whole layer.
+    : _kind(kind), _thickness(std::round(thicknessMm / 1000 / constants::baseUnit * constants::unitMultiplier)),
       _name(std::move(name)) {
     if (_kind == LayerKind::Metal) {
         _file = _name;

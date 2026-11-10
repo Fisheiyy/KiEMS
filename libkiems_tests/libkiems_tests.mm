@@ -620,6 +620,18 @@ bool isSimNode(const libkicad::ComponentSimNode& node, libkicad::ComponentSimNod
     XCTAssertEqualWithAccuracy(footprint.height, expected, 1e-9);
 }
 
+- (void)testLayerThicknessesStackOntoIntegerMeshLines {
+    // The z mesh lines are whole simulation units; a stack of unrounded thicknesses (1.51 mm is
+    // 15100.000000000002 units) put the bottom copper just off its line and the solver dropped it.
+    double offset = 0;
+    for (const double mm : {0.035, 0.2, 1.51, 1.6, 0.1, 0.0152, 1.265}) {
+        const kiems::LayerConfig layer(kiems::LayerKind::Substrate, "S", mm, 4.5);
+        XCTAssertEqual(layer.thickness(), std::round(mm * 10000.0));
+        offset -= layer.thickness();
+        XCTAssertEqual(offset, std::trunc(offset));
+    }
+}
+
 - (void)testDifferentialPairDisplayNames {
     XCTAssertTrue(kiems::differentialPairBaseName("/X/Y/Z/ABC+", "/X/Y/Z/ABC-") == "/X/Y/Z/ABC");
     XCTAssertTrue(kiems::differentialPairBaseName("DATA_P", "DATA_N") == "DATA");
