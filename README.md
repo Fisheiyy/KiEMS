@@ -5,13 +5,16 @@ board and simulation configuration into geometry, runs an FDTD simulation, and
 produces results such as S-parameters, impedance, delay, Smith charts, probe
 plots, and eye diagrams.
 
-The repository contains three main pieces:
+The repository contains four main pieces:
 
 - **KiEMS.app** — the native desktop application for configuring, running, and
   inspecting simulations. It is **macOS-only**.
+- **`kiems-gui`** — a cross-platform Qt 6 desktop app that reads and writes the
+  same documents. It covers board setup, simulation settings, eye tests,
+  running, and the main results charts: a subset of KiEMS.app so far.
 - **`kiems`** — a cross-platform command-line interface for the same workflow.
-- **`libkiems`** — the cross-platform C++ simulation library used by both
-  interfaces.
+- **`libkiems`** — the cross-platform C++ simulation library used by all of
+  them.
 
 ## KiEMS application
 
@@ -260,6 +263,25 @@ install folder when it isn't on `PATH`.
 The stock backend also works on macOS and Linux (configure with
 `-DLIBKICAD_BACKEND=stock`), so those platforms can skip the KiCad source
 build too.
+
+#### kiems-gui
+
+`kiems-gui` is built when CMake is configured with `-DKIEMS_BUILD_GUI=ON` and
+finds Qt 6.5 or newer (Widgets, Charts and Concurrent). On Windows the GUI
+presets do both, with vcpkg adding Qt (the manifest's `gui` feature) in a
+separate installed tree, `out\vcpkg_installed_gui`:
+
+```bat
+cmake --preset windows-msvc-gui-release
+cmake --build --preset windows-msvc-gui-release --target kiems-gui
+```
+
+The app runs the pipeline through `kiems`, which it expects beside its own
+executable; building `kiems-gui` builds the command-line tools too. Its
+**Simulation > Engine...** setting (also in the status bar) chooses between
+Automatic (the GPU when there is one), GPU and CPU, and which GPU.
+`kiems-gui-tests`, built on request, tests its editing logic without showing a
+window. So far the app has been built and tested on Windows only.
 
 `libkiems_tests` uses Apple's XCTest framework, so the test suite only runs on
 macOS.

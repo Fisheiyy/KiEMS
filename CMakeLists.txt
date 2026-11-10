@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.25)
 project(KiEMS LANGUAGES CXX)
 
 option(KIEMS_BUILD_TESTS "Build the libkiems test bundle" ON)
+# The cross-platform Qt desktop app (kiems-gui/). Off by default: it needs Qt 6, and macOS also has
+# the native app in KiEMS/, built by Xcode.
+option(KIEMS_BUILD_GUI "Build kiems-gui, the cross-platform Qt desktop app" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
@@ -124,6 +127,11 @@ if(WIN32)
 endif()
 add_kiems_tool(kiems_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/kiems_fdtd_worker/main.cpp")
 add_kiems_tool(copper_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/copper_fdtd_worker/main.cpp")
+
+if(KIEMS_BUILD_GUI)
+    include(GNUInstallDirs)
+    add_subdirectory(kiems-gui)
+endif()
 
 if(KIEMS_BUILD_TESTS)
     if(APPLE)

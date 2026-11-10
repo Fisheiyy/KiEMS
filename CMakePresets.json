@@ -90,6 +90,33 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "windows-gui-base",
+      "hidden": true,
+      "inherits": "windows-base",
+      "description": "Also builds kiems-gui, the Qt desktop app: vcpkg adds Qt (the manifest's gui feature), in a separate installed tree so switching presets never uninstalls it.",
+      "cacheVariables": {
+        "KIEMS_BUILD_GUI": "ON",
+        "VCPKG_MANIFEST_FEATURES": "gui",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/out/vcpkg_installed_gui"
+      }
+    },
+    {
+      "name": "windows-msvc-gui-debug",
+      "displayName": "Windows (MSVC) Debug, with the desktop app",
+      "inherits": "windows-gui-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-msvc-gui-release",
+      "displayName": "Windows (MSVC) Release, with the desktop app",
+      "inherits": "windows-gui-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -99,7 +126,9 @@
     { "name": "linux-release", "configurePreset": "linux-release" },
     { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
     { "name": "windows-msvc-relwithdebinfo", "configurePreset": "windows-msvc-relwithdebinfo" },
-    { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release" }
+    { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release" },
+    { "name": "windows-msvc-gui-debug", "configurePreset": "windows-msvc-gui-debug" },
+    { "name": "windows-msvc-gui-release", "configurePreset": "windows-msvc-gui-release" }
   ],
   "testPresets": [
     { "name": "macos-debug", "configurePreset": "macos-debug" },

@@ -27,5 +27,14 @@
         "tools"
       ]
     }
-  ]
+  ],
+  "features": {
+    "gui": {
+      "description": "The cross-platform KiEMS desktop app (kiems-gui): Qt Widgets and Qt Charts",
+      "dependencies": [
+        "qtbase",
+        "qtcharts"
+      ]
+    }
+  }
 }

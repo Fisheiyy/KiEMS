@@ -1,0 +1,73 @@
+// The right-hand panel, in tabs as the macOS app's Info column is:
+//  - Simulation: the selected simulation's networks -- name, ground net, reference plane, its
+//    excitations, involved and edge-terminated nets.
+//  - Selection: whatever was picked on the board, and how the simulation uses it (SelectionPanel).
+//  - Settings: its geometry and resolution settings (SettingsPanel).
+//  - Tests: its eye test (TestsPanel).
+#pragma once
+
+#include "BoardModel.hpp"
+#include "BoardView.hpp"
+#include "Document.hpp"
+
+#include <QWidget>
+
+#include <memory>
+
+class QCheckBox;
+class QComboBox;
+class QGroupBox;
+class QLineEdit;
+class QListWidget;
+class QPushButton;
+class QTabWidget;
+
+namespace kiems_gui {
+
+class SelectionPanel;
+class SettingsPanel;
+class TestsPanel;
+
+class Inspector : public QWidget {
+    Q_OBJECT
+
+public:
+    Inspector(Document* document, QWidget* parent = nullptr);
+
+    void setBoard(std::shared_ptr<const BoardData> board);
+    void setSimulation(int simulation);
+    /// Shows `pick` in the Selection tab, switching to it when something was picked.
+    void setPick(const BoardPick& pick);
+    /// Re-reads everything from the document.
+    void refresh();
+
+private:
+    void populateBoardLists();
+
+    Document* _document;
+    std::shared_ptr<const BoardData> _board;
+    int _simulation = -1;
+    bool _updating = false;
+
+    QTabWidget* _tabs;
+    QWidget* _selectionPage;
+    SelectionPanel* _selection;
+    SettingsPanel* _settings;
+    TestsPanel* _tests;
+
+    QGroupBox* _simulationGroup;
+    QLineEdit* _name;
+    QCheckBox* _differentialPair;
+    QComboBox* _groundNet;
+    QComboBox* _plane;
+    QListWidget* _excitations;
+    QPushButton* _removeExcitation;
+    QListWidget* _nets;
+    QPushButton* _removeNet;
+    QListWidget* _edgeNets;
+    QComboBox* _edgeNetPicker;
+    QPushButton* _addEdgeNet;
+    QPushButton* _removeEdgeNet;
+};
+
+} // namespace kiems_gui
