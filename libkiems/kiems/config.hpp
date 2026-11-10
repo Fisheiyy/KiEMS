@@ -1393,8 +1393,11 @@ public:
     /// reference planes. sliceBoardForSimulation() records where these nets' copper meets the cut
     /// (SlicedBoard::edgeTerminationLoops) and Simulation::addEdgeTerminations() places a matched
     /// resistive sheet (a dissipative edge termination, Novak 1999) in the dielectric on either side,
-    /// so energy reaching the cut leaves as it would into the rest of the plane. Names use the same
-    /// spelling as ground_net's "net" (the board's own net names).
+    /// so energy reaching the cut leaves as it would into the rest of the plane. The ground net can
+    /// be terminated too: a ground pour cut on both sides of a two-layer board otherwise rings as a
+    /// patch (StickHub's LED3: 2.57 GHz, Q 22, at the default hull padding). Only the cut is
+    /// terminated, not where it follows the board's real edge, which really is open. Names use the
+    /// same spelling as ground_net's "net" (the board's own net names).
     const std::vector<std::string>& edgeTerminatedNets() const { return _edgeTerminatedNets; }
     std::vector<std::string>& edgeTerminatedNets() { return _edgeTerminatedNets; }
 

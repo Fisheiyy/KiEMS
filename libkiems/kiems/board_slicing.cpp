@@ -809,13 +809,19 @@ std::expected<SlicedBoard, std::string> sliceBoardForSimulation(
             if (!net.empty()) terminated.insert(NetName(net)); // "" is a UI row with no net chosen yet
         }
         std::vector<libkicad::CopperPolygon> terminatedCopper;
-        for (const auto* source : {&involvedCopper, &geometryOnlyCopper}) {
+        for (const auto* source : {&involvedCopper, &geometryOnlyCopper, &groundCopper}) {
             for (const libkicad::CopperPolygon& polygon : *source) {
                 if (terminated.contains(NetName(polygon.netName))) terminatedCopper.push_back(polygon);
             }
         }
-        const PolygonSet band = differencePolygons(
+        const PolygonSet cutBand = differencePolygons(
             cutout, offsetPolygons(cutout, -slicing.edgeTerminationWidth, tessellationTolerance));
+        // Only where the cut is artificial: where it runs along the board's real edge, that edge
+        // really is open, and terminating it would damp the board's own resonances. So keep the part
+        // of the band at least a termination width inside the real outline.
+        const PolygonSet realOutline = _polygonLoopsToPolygons(geometry.outline, origin.xMin, origin.yMin);
+        const PolygonSet band = intersectPolygons(
+            cutBand, offsetPolygons(realOutline, -slicing.edgeTerminationWidth, tessellationTolerance));
         result.edgeTerminationLoops.resize(layerNames.size());
         std::size_t layersWithTermination = 0;
         for (std::size_t layerIndex = 0; layerIndex < layerNames.size(); ++layerIndex) {

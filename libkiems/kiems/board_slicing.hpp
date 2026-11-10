@@ -276,8 +276,9 @@ struct SlicingConfig {
     /// ever reads) sliceBoardForSimulation() actually needs: which layer each involved/geometry-only/
     /// ground CopperPolygon's own copperLayerName should be matched against, per output layer index.
     std::vector<std::string> layerNames;
-    /// SimulationConfig::edgeTerminatedNets(): involved/geometry-only copper on these nets gets a
-    /// SlicedBoard::edgeTerminationLoops entry wherever it lies within edgeTerminationWidth of the cut.
+    /// SimulationConfig::edgeTerminatedNets(): involved, geometry-only or ground copper on these nets
+    /// gets a SlicedBoard::edgeTerminationLoops entry wherever it lies within edgeTerminationWidth of
+    /// the cut, except where the cut follows the board's real edge.
     std::vector<std::string> edgeTerminatedNets;
     /// Width of that band inward from the cut, in simulation units -- the grid's maximum cell size,
     /// so the band always covers at least one column of Yee edges.

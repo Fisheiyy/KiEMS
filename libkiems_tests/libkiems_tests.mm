@@ -2499,6 +2499,45 @@ static kiems::EyeAggressor eyeTestTone(const std::vector<double>& frequencies, d
     XCTAssertEqual(kiems::warnAboutDisconnectedPortReturns(simulation, board, {}), 1U);
 }
 
+- (void)testGroundIsEdgeTerminatedAlongTheCutButNotTheRealEdge {
+    // A 40x20 mm board with ground on B.Cu right up to every edge, and a short signal near the left
+    // edge whose 3 mm hull leaves a cutout of x 0..13, y 6..14: real edge on the left, cut elsewhere.
+    const kiems::SlicingConfig slicing{
+        .hullPadding = 3.0 * kSimUnitsPerMm,
+        .viaEdgeDistance = 0.5 * kSimUnitsPerMm,
+        .viaSpacing = 1.0 * kSimUnitsPerMm,
+        .platingThickness = 50,
+        .stitchingViaHoleDiameter = 300,
+        .stitchingViaAnnularRingDiameter = 600,
+        .viaClearance = 200,
+        .pixelSize = 5,
+        .layerNames = {"F.Cu", "B.Cu"},
+        .edgeTerminatedNets = {"GND"},
+        .edgeTerminationWidth = 0.3 * kSimUnitsPerMm,
+    };
+    libkicad::BoardGeometry geometry;
+    geometry.outline = {rectMm(0, 0, 40, 20)};
+    const std::vector<libkicad::CopperPolygon> signal = {copperRectMm("SIG", "F.Cu", 0, 9, 10, 11)};
+    const std::vector<libkicad::CopperPolygon> ground = {copperRectMm("GND", "B.Cu", 0, 0, 40, 20)};
+
+    auto sliced = kiems::sliceBoardForSimulation(slicing, geometry, signal, {}, ground, {}, {});
+    XCTAssertTrue(sliced.has_value());
+    if (!sliced.has_value()) return;
+    XCTAssertEqual(sliced->edgeTerminationLoops.size(), 2U);
+    if (sliced->edgeTerminationLoops.size() != 2) return;
+    XCTAssertTrue(sliced->edgeTerminationLoops[0].empty()); // no ground on F.Cu
+    const double area = std::abs(Cu::area(sliced->edgeTerminationLoops[1]));
+    double xMin = std::numeric_limits<double>::infinity();
+    for (const Cu::Polygon& loop : sliced->edgeTerminationLoops[1]) {
+        for (const Cu::Position& point : loop) xMin = std::min(xMin, point.x());
+    }
+    // The cut, 0.3 mm wide: the hull's straight top and bottom (x 0.3..10), its right edge (y 9..11)
+    // and the two 3 mm quarter-circle corners between them; nothing along the real left edge.
+    const double mm2 = kSimUnitsPerMm * kSimUnitsPerMm;
+    XCTAssertEqualWithAccuracy(area / mm2, 0.3 * (2 * 9.7 + 2) + M_PI / 2 * (3 * 3 - 2.7 * 2.7), 0.05);
+    XCTAssertGreaterThanOrEqual(xMin, 0.29 * kSimUnitsPerMm);
+}
+
 - (void)testSliceBoardForSimulationCutsNPTHHolesFromPreviewOnly {
     const kiems::SlicingConfig slicing{
         .hullPadding = 1.0 * kSimUnitsPerMm,
