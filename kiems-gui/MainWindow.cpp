@@ -427,12 +427,10 @@ void MainWindow::runSimulation(bool storeFields) {
     _log->clear();
     _log->appendPlainText(tr("Engine: %1").arg(_engine.describe(_gpuDevices)));
     QStringList arguments = _engine.arguments(_gpuDevices);
-    if (storeFields) {
-        arguments << "--field-frames";
-        // The run writes the other of the two alternating series files, but there's no reason
-        // to keep the old one open while it does.
-        _fieldViewer->close();
-    }
+    if (storeFields) arguments << "--field-frames";
+    // A run clears the simulation's old output, which Windows refuses while a file in it is open:
+    // let go of the Field Viewer's series first.
+    _fieldViewer->close();
     _runningStoresFields = storeFields;
     if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), _runningSimulation, arguments, &error)) {
         _runningSimulation.clear();
