@@ -18,6 +18,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     EngineSettings.hpp
     EyeTestPresets.cpp
     EyeTestPresets.hpp
+    EyeView.cpp
+    EyeView.hpp
     FieldViewer.cpp
     FieldViewer.hpp
     Inspector.cpp

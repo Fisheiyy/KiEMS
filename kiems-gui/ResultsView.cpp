@@ -1,5 +1,7 @@
 #include "ResultsView.hpp"
 
+#include "EyeView.hpp"
+
 #include <QChart>
 #include <QChartView>
 #include <QDir>
@@ -63,6 +65,24 @@ QChartView* makeChart(const QString& yTitle) {
     auto* view = new QChartView(chart);
     view->setRenderHint(QPainter::Antialiasing);
     view->setMinimumHeight(300);
+    return view;
+}
+
+/// One chart of time (ns) against volts.
+QChartView* makeTimeChart() {
+    QChartView* view = makeChart(QObject::tr("Voltage [V]"));
+    QChart* chart = view->chart();
+    QAbstractAxis* logAxis = chart->axes(Qt::Horizontal).value(0);
+    chart->removeAxis(logAxis);
+    delete logAxis;
+    auto* x = new QValueAxis;
+    x->setTitleText(QObject::tr("Time [ns]"));
+    x->setLabelFormat("%g");
+    x->setLabelsColor(kText);
+    x->setTitleBrush(kText);
+    x->setGridLineColor(kGrid);
+    x->setLinePenColor(kGrid);
+    chart->addAxis(x, Qt::AlignBottom);
     return view;
 }
 
@@ -250,6 +270,28 @@ SimulationResults SimulationResults::load(const QString& resultsDir, const QStri
         }
         results.ports.push_back(std::move(port));
     }
+    // Time-domain responses: "time_s,voltage_v" per port.
+    results.resultsDir = resultsDir;
+    const QDir excitations(QDir(resultsDir).filePath("excitations"));
+    for (const QString& name : excitations.entryList({"*_response.csv"}, QDir::Files, QDir::Name)) {
+        QFile file(excitations.filePath(name));
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        QTextStream stream(&file);
+        stream.readLine();
+        TimeResponse response;
+        // The file name is the port's, with "/" (not allowed in a file name) stored as "_".
+        response.name = name.chopped(QString("_response.csv").size());
+        for (const auto& [index, portName] : results.portNames) {
+            if (QString(portName).replace('/', '_') == response.name) response.name = portName;
+        }
+        while (!stream.atEnd()) {
+            const QStringList row = fields(stream.readLine());
+            if (row.size() < 2) continue;
+            response.timeSeconds.push_back(row[0].toDouble());
+            response.volts.push_back(row[1].toDouble());
+        }
+        if (!response.timeSeconds.empty()) results.responses.push_back(std::move(response));
+    }
     if (results.ports.empty()) results.error = QObject::tr("No results yet. Run the simulation to produce them.");
     return results;
 }
@@ -329,6 +371,52 @@ void ResultsView::showResults(const QString& title, const SimulationResults& res
     _tabs->addTab(impedance.isEmpty() ? message(tr("No impedance data.")) : scrollingColumn(impedance), tr("Impedance"));
     _tabs->addTab(smith, tr("Smith"));
     _tabs->addTab(delays.isEmpty() ? message(tr("No delay data.")) : scrollingColumn(delays), tr("Trace Delays"));
+
+    // Every port's response with every excitation driving it, on one time axis.
+    if (results.responses.empty()) {
+        _tabs->addTab(message(tr("No time-domain responses: they're computed for simulations with excitations.")),
+                      tr("Time Domain"));
+    } else {
+        QChartView* timeChart = makeTimeChart();
+        double peak = 0;
+        for (const TimeResponse& response : results.responses) {
+            for (const double v : response.volts) {
+                if (std::isfinite(v)) peak = std::max(peak, std::abs(v));
+            }
+        }
+        const auto [scale, unit] = peak < 1e-3 ? std::pair{1e6, QString::fromUtf8("\xC2\xB5V")}
+                                 : peak < 1    ? std::pair{1e3, QString("mV")}
+                                               : std::pair{1.0, QString("V")};
+        for (QAbstractAxis* axis : timeChart->chart()->axes(Qt::Vertical)) axis->setTitleText(tr("Voltage [%1]").arg(unit));
+        int t = 0;
+        for (const TimeResponse& response : results.responses) {
+            auto* series = new QLineSeries;
+            series->setName(response.name);
+            QList<QPointF> points;
+            // Plenty for a chart; long continuous runs hold far more samples than pixels.
+            const std::size_t stride = std::max<std::size_t>(1, response.timeSeconds.size() / 4000);
+            for (std::size_t i = 0; i < response.timeSeconds.size(); i += stride) {
+                if (std::isfinite(response.volts[i])) points.append({response.timeSeconds[i] * 1e9, response.volts[i] * scale});
+            }
+            series->replace(points);
+            series->setPen(QPen(kSeriesColors[t++ % kSeriesColors.size()], 1.6));
+            timeChart->chart()->addSeries(series);
+            for (QAbstractAxis* axis : timeChart->chart()->axes()) series->attachAxis(axis);
+        }
+        double end = 0;
+        for (const TimeResponse& response : results.responses) end = std::max(end, response.timeSeconds.back() * 1e9);
+        for (QAbstractAxis* axis : timeChart->chart()->axes(Qt::Horizontal)) axis->setRange(0, end);
+        fitYAxis(timeChart);
+        for (QAbstractAxis* axis : timeChart->chart()->axes()) {
+            if (auto* values = qobject_cast<QValueAxis*>(axis)) values->applyNiceNumbers();
+        }
+        timeChart->setMinimumHeight(420);
+        _tabs->addTab(scrollingColumn({heading(tr("Voltage at each port, every excitation together")), timeChart}),
+                      tr("Time Domain"));
+    }
+
+    const EyeResults eyes = EyeResults::load(results.resultsDir);
+    _tabs->addTab(eyes.eyes.empty() ? message(eyes.error) : makeEyesPage(eyes), tr("Eyes"));
 }
 
 } // namespace kiems_gui
