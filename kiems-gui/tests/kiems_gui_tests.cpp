@@ -3,12 +3,14 @@
 // Every document edited here is also run through libkiems' own parser (Document::validate()).
 #include "Document.hpp"
 #include "EyeTestPresets.hpp"
+#include "EyeView.hpp"
 #include "QuantityEdit.hpp"
 #include "SettingsPanel.hpp"
 #include "SimulationEditor.hpp"
 #include "TestsPanel.hpp"
 
 #include "kiems/config.hpp"
+#include "kiems/excitation_postprocess.hpp"
 
 #include <QAction>
 #include <QMenu>
@@ -16,6 +18,9 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#include <complex>
+#include <numbers>
 
 using kiems_gui::Document;
 using kiems_gui::EyeTestPreset;
@@ -481,6 +486,100 @@ private slots:
             const nlohmann::json roundTripped = parsed;
             QCOMPARE(QString::fromStdString(roundTripped["standard"].get<std::string>()), QString(preset.standard));
             QVERIFY(preset.x1 <= preset.x2 && preset.x2 <= 0.5);
+        }
+    }
+
+    void eyes() {
+        // Two known channels through the whole path the Eyes tab takes: libkiems builds the eyes and
+        // writes eyes.json as kiems does, the GUI reads it back and draws it. A single-pole low-pass
+        // with a delay: at 2 GHz a 480 Mb/s eye is wide open, at 150 MHz the bits smear together.
+        std::vector<double> frequencies;
+        for (int f = 1; f <= 6000; ++f) frequencies.push_back(f * 1e6);
+        const auto channel = [&](double cornerHz, double delaySeconds) {
+            std::vector<std::complex<double>> transfer;
+            for (const double f : frequencies) {
+                transfer.push_back(std::polar(1.0, -2 * std::numbers::pi * f * delaySeconds) /
+                                   std::complex<double>(1.0, f / cornerHz));
+            }
+            return transfer;
+        };
+        kiems::EyeTestConfig test;
+        test.standard = kiems::EyeMaskStandard::UsbHighSpeed;
+        test.signalLevel = 0.4;
+        test.mask = {0.075, 0.375, 0.3, 0.525};
+        std::vector<kiems::SimulationEye> eyes;
+        for (const auto& [name, corner] : {std::pair{"Fast channel", 2e9}, std::pair{"Slow channel", 150e6}}) {
+            auto eye = kiems::computeEyeDiagram(frequencies, channel(corner, 0.7e-9), 480e6, {}, {}, test.signalLevel,
+                                                test.mask);
+            QVERIFY(eye.has_value());
+            eyes.push_back({name, false, 0, std::move(*eye)});
+        }
+        // Launched at +-0.4 V into a lossless-at-DC channel, the open eye is nearly 0.8 V tall.
+        QVERIFY(eyes[0].eye.opening.heightV > 0.7 && eyes[0].eye.opening.heightV < 0.81);
+        QVERIFY(eyes[0].eye.maskResult && eyes[0].eye.maskResult->passed());
+        QVERIFY(eyes[1].eye.opening.heightV < eyes[0].eye.opening.heightV - 0.2);
+        QVERIFY(eyes[1].eye.maskResult && !eyes[1].eye.maskResult->passed());
+        // Both are centred on their threshold crossings, so the mask sits on the eye: the traces
+        // switching at 0 UI cross there on average -- not where the slow channel's edges start.
+        for (const auto& simulated : eyes) {
+            const kiems::EyeDiagramData& eye = simulated.eye;
+            double crossings = 0;
+            int count = 0;
+            for (const auto& trace : eye.traces) {
+                for (std::size_t i = 0; i + 1 < trace.size() && eye.timeUI[i] < 0.5; ++i) {
+                    const double a = trace[i] - eye.thresholdV, b = trace[i + 1] - eye.thresholdV;
+                    if (eye.timeUI[i] < -0.5 || (a < 0) == (b < 0)) continue;
+                    crossings += eye.timeUI[i] + (eye.timeUI[i + 1] - eye.timeUI[i]) * a / (a - b);
+                    ++count;
+                    break;
+                }
+            }
+            QVERIFY(count > 20);
+            QVERIFY2(std::fabs(crossings / count) < 0.05, qPrintable(QString::number(crossings / count)));
+        }
+
+        QTemporaryDir dir;
+        kiems::saveEyeDiagrams(eyes, test, std::filesystem::path(dir.path().toStdWString()) / "eyes.json");
+        const kiems_gui::EyeResults results = kiems_gui::EyeResults::load(dir.path());
+        QCOMPARE(results.error, QString());
+        QCOMPARE(results.standard, QString("usb_high_speed"));
+        QCOMPARE(results.eyes.size(), std::size_t(2));
+        QCOMPARE(results.maskY1, 0.3);
+        const kiems_gui::EyeEntry& open = results.eyes[0];
+        QCOMPARE(open.name, QString("Fast channel"));
+        QCOMPARE(open.traces.size(), eyes[0].eye.traces.size());
+        QVERIFY(open.mask && open.mask->passed);
+        QVERIFY(results.eyes[1].mask && !results.eyes[1].mask->passed);
+        QVERIFY(std::fabs(open.opening.heightV - eyes[0].eye.opening.heightV) < 1e-6);
+
+        // The bits sit where the chart puts them: at 0.5 UI every trace is a settled one or zero,
+        // and at 0 and 1 UI the transitions cross the threshold.
+        const auto at = [&](double ui) {
+            const auto nearest = std::min_element(open.timeUI.begin(), open.timeUI.end(), [&](double a, double b) {
+                return std::fabs(a - ui) < std::fabs(b - ui);
+            });
+            return static_cast<std::size_t>(nearest - open.timeUI.begin());
+        };
+        int ones = 0, zeros = 0;
+        for (const auto& trace : open.traces) {
+            const double middle = trace[at(0.5)] - open.thresholdV;
+            QVERIFY(std::fabs(middle) > 0.3);
+            (middle > 0 ? ones : zeros)++;
+        }
+        QVERIFY(ones > 30 && zeros > 30);
+        for (const double edge : {0.0, 1.0}) {
+            double nearest = INFINITY;
+            for (const auto& trace : open.traces) nearest = std::min(nearest, std::fabs(trace[at(edge)] - open.thresholdV));
+            QVERIFY(nearest < 0.15);
+        }
+
+        // Drawn, for a look: KIEMS_GUI_SNAPSHOTS names a folder to save it in.
+        std::unique_ptr<QWidget> page(kiems_gui::makeEyesPage(results));
+        page->resize(1000, 1500);
+        const QPixmap pixmap = page->grab();
+        QVERIFY(!pixmap.isNull());
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            QVERIFY(pixmap.save(QDir(snapshots).filePath("eyes.png")));
         }
     }
 };

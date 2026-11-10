@@ -83,6 +83,8 @@ if(TARGET Qt6::Test)
         Document.hpp
         EyeTestPresets.cpp
         EyeTestPresets.hpp
+        EyeView.cpp
+        EyeView.hpp
         QuantityEdit.cpp
         QuantityEdit.hpp
         SettingsPanel.cpp

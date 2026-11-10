@@ -492,6 +492,35 @@ std::optional<EyeDiagramData> computeEyeDiagram(
             transitionPhase = phase;
         }
     }
+    // The steepest point is where an edge starts, not where it crosses the threshold: through a
+    // low-pass channel the crossing comes a good part of a UI later, which would leave the mask (on
+    // 0...1 UI) off the eye's centre. So centre on the crossings themselves, as a scope's clock
+    // recovery does: each transition's first crossing of the waveform's mean in the UI around the
+    // steepest phase, averaged round the UI so a crossing past its window still counts.
+    {
+        double mean = 0;
+        for (const double sample : received.samples) mean += sample;
+        mean /= static_cast<double>(received.samples.size());
+        const auto half = static_cast<std::ptrdiff_t>(kSamplesPerUI / 2);
+        double sumCos = 0, sumSin = 0;
+        for (std::size_t bit = 0; bit < kBitCount; ++bit) {
+            const auto edge = static_cast<std::ptrdiff_t>(bit * kSamplesPerUI + transitionPhase);
+            for (std::ptrdiff_t sample = edge - half; sample < edge + half; ++sample) {
+                const double before = receivedAt(sample) - mean, after = receivedAt(sample + 1) - mean;
+                if ((before < 0) == (after < 0) || !std::isfinite(before) || !std::isfinite(after)) continue;
+                const double crossing = static_cast<double>(sample) + before / (before - after);
+                const double angle = kTwoPi * crossing / static_cast<double>(kSamplesPerUI);
+                sumCos += std::cos(angle);
+                sumSin += std::sin(angle);
+                break;
+            }
+        }
+        if (std::hypot(sumCos, sumSin) > 0) {
+            const double phase = std::atan2(sumSin, sumCos) / kTwoPi * static_cast<double>(kSamplesPerUI);
+            const auto samples = static_cast<std::ptrdiff_t>(kSamplesPerUI);
+            transitionPhase = static_cast<std::size_t>(((std::lround(phase) % samples) + samples) % samples);
+        }
+    }
     // Trace `bit` spans its UI from half a UI before the transition at its start.
     const auto traceStart = [&](std::size_t bit) {
         return static_cast<std::ptrdiff_t>(bit * kSamplesPerUI + transitionPhase) -
