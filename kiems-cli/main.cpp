@@ -572,6 +572,11 @@ struct FieldFrameCapture {
     std::map<std::filesystem::path, std::vector<std::pair<std::int32_t, std::filesystem::path>>> series;
 };
 
+/// Below this much decay of its field energy, a run cut short by max_steps gives S-parameters that
+/// are plainly wrong: on KiCad's StickHub demo, 7-22 dB gave |S| above 1, where 35 dB gave a
+/// passive, symmetric pair.
+constexpr double kMinTrustedEnergyDecayDB = 30.0;
+
 constexpr const char* kFieldFrameManifest = "field_frames_current.txt";
 constexpr const char* kFieldFramePackage = "field_frames.kemsf";
 
@@ -675,6 +680,21 @@ std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std:
                                     (probeDir / probeResult.name).string());
         }
         probeFile << probeResult.data();
+    }
+    if (!gpuResult.endCriteriaReached) {
+        // Spectra of a response cut off before it decays ripple, and can even show |S| > 1.
+        std::ostringstream message;
+        message << "Simulation \"" << pathToUtf8(probeDir.parent_path().filename()) << "\", port "
+                << excitedPortNumber << ": max_steps (" << portConfig.maxTimesteps
+                << ") ran out with the field energy down " << std::fixed << std::setprecision(1)
+                << gpuResult.energyDecayDB << " dB";
+        if (gpuResult.energyDecayDB < kMinTrustedEnergyDecayDB) {
+            message << " -- its S-parameters will be wrong, worst at low frequencies; raise max_steps";
+            logWarning(message.str());
+        } else {
+            message << ", short of the 60 dB end criteria";
+            logInfo(message.str());
+        }
     }
     return gpuResult.timestepsRun;
 }
