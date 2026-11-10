@@ -488,14 +488,17 @@ void saveAndRenderResults(const PostprocessResult& results, const Arguments& arg
             if (post == nullptr) {
                 continue;
             }
+            const std::map<std::int32_t, double> runDurations =
+                ExcitationPostprocessor::loadRunDurations(args.input() / simConfig.name(), simConfig);
+            // The eyes the results show, tested against the simulation's eye mask (eyes.json).
+            saveEyeDiagrams(computeSimulationEyes(*post, simConfig, results.config().frequency(), runDurations),
+                            simConfig.eyeTest(), outDir / "eyes.json");
             const std::filesystem::path excDir = outDir / "excitations";
             std::filesystem::create_directories(excDir);
             const std::vector<double> frequencies =
                 linspace(results.config().frequency().start(), results.config().frequency().stop(),
                          constants::frequencySampleCount);
-            ExcitationPostprocessor excPost(
-                simConfig, *post, frequencies, results.config().frequency(),
-                ExcitationPostprocessor::loadRunDurations(args.input() / simConfig.name(), simConfig));
+            ExcitationPostprocessor excPost(simConfig, *post, frequencies, results.config().frequency(), runDurations);
             excPost.run();
             excPost.saveToFile(excDir);
             excPost.renderPlots(excDir, args.transparent());

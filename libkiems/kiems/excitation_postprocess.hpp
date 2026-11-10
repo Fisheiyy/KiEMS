@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "config.hpp"
@@ -26,6 +27,30 @@ double primaryRunDuration(const SimulationConfig& simConfig, const std::map<std:
 /// Without run lengths, falls back to 1.2x its configured startTime()+duration().
 double excitationRecordEnd(const ExcitationConfig& excitation, const SimulationConfig& simConfig,
                            const std::map<std::int32_t, double>& runDurations, const Frequency& frequency);
+
+/// One eye in a simulation's results: what it's named in them, whether it's a differential pair's
+/// Vp-Vn, how many adversarial excitations its noisy variant adds, and the eye itself.
+struct SimulationEye {
+    std::string name;
+    bool differential = false;
+    std::size_t aggressorCount = 0;
+    EyeDiagramData eye;
+};
+
+/// Every eye a simulation's results show, as the macOS app builds them: one per differential pair
+/// (its mixed-mode channel, Vp-Vn at the pair's probes), then one per probed receiver of each main
+/// excitation that isn't part of a pair. Each is built at the simulation's eye bit rate (the top of
+/// the sweep without one) and signal level, tested against its eye mask, and given the noise of
+/// every adversarial excitation not driving it. `runDurations` as for ExcitationPostprocessor.
+std::vector<SimulationEye> computeSimulationEyes(const Postprocessor& postprocessor, const SimulationConfig& simConfig,
+                                                 const Frequency& frequency,
+                                                 const std::map<std::int32_t, double>& runDurations);
+
+/// Writes `eyes` to `path` as JSON (format 1): the eye test they were built for, then each eye's
+/// traces on its time axis, its openings, its mask verdicts and its noise statistics. Values are
+/// rounded to seven significant figures, far finer than an eye shows.
+void saveEyeDiagrams(const std::vector<SimulationEye>& eyes, const EyeTestConfig& test,
+                     const std::filesystem::path& path);
 
 class ExcitationPostprocessor {
 public:

@@ -5,9 +5,11 @@
 #include <fstream>
 #include <numbers>
 #include <optional>
+#include <set>
 #include <sstream>
 
 #include <matplot/matplot.h>
+#include <nlohmann/json.hpp>
 
 #include "logging.hpp"
 #include "path_utf8.hpp"
@@ -246,6 +248,194 @@ void ExcitationPostprocessor::renderPlots(const std::filesystem::path& outputDir
         matplot::grid(true);
         _saveFigure(fig, outputDir / (_sanitizeForFilename(ports[i].name()) + "_response.png"), transparent);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Eyes
+
+std::vector<SimulationEye> computeSimulationEyes(const Postprocessor& postprocessor, const SimulationConfig& simConfig,
+                                                 const Frequency& frequency,
+                                                 const std::map<std::int32_t, double>& runDurations) {
+    std::vector<SimulationEye> eyes;
+    const auto portCount = static_cast<std::int32_t>(simConfig.ports().size());
+    const std::size_t sampleCount = postprocessor.frequencies().size();
+    const double bitRate = simConfig.eyeBitRate() > 0 ? simConfig.eyeBitRate() : frequency.stop();
+
+    EyeNoiseOptions noiseOptions;
+    noiseOptions.drawCount = simConfig.eyeDrawCount();
+    noiseOptions.sharedClock = simConfig.adversarialSharedClock();
+    EyeTestConfig test = simConfig.eyeTest();
+    // computeEyeDiagram() rejects a non-positive level; its own default beats losing every eye.
+    if (!(test.signalLevel > 0) || !std::isfinite(test.signalLevel)) test.signalLevel = 1.0;
+
+    // The channel from `input` to the voltage at `output`, per unit incident voltage at `input`: the
+    // S-parameter for an absorbing output, the equivalent probe transfer for a passive one, so both
+    // kinds of receiver give eyes on the same scale.
+    const auto receivedTransfer = [&](std::int32_t output, std::int32_t input) {
+        return simConfig.ports()[static_cast<std::size_t>(output)].absorbSignal()
+                   ? postprocessor.getSParam(output, input)
+                   : postprocessor.getProbeTransfer(output, input);
+    };
+
+    // `inputs` are the eye's own driven ports, never aggressors on it. The received quantity is the
+    // voltage at `positiveOutput`, minus `negativeOutput`'s for a differential eye, so an
+    // aggressor's transfer to it is S(positiveOutput, a) - S(negativeOutput, a).
+    const auto appendEye = [&](std::string name, bool differential, const std::vector<std::complex<double>>& transfer,
+                               const std::set<std::int32_t>& inputs, std::int32_t positiveOutput,
+                               std::optional<std::int32_t> negativeOutput) {
+        std::vector<EyeAggressor> aggressors;
+        for (const ExcitationConfig& excitation : simConfig.excitations()) {
+            if (excitation.isMain() || !excitation.drivenPortIndex().has_value() ||
+                inputs.contains(*excitation.drivenPortIndex()) || !excitation.frequency().has_value() ||
+                !excitation.amplitude().has_value()) {
+                continue;
+            }
+            const std::int32_t port = *excitation.drivenPortIndex();
+            auto aggressorTransfer = receivedTransfer(positiveOutput, port);
+            if (!aggressorTransfer.has_value() || aggressorTransfer->size() != sampleCount) continue;
+            if (negativeOutput.has_value()) {
+                const auto negative = receivedTransfer(*negativeOutput, port);
+                if (!negative.has_value() || negative->size() != aggressorTransfer->size()) continue;
+                for (std::size_t f = 0; f < aggressorTransfer->size(); ++f) (*aggressorTransfer)[f] -= (*negative)[f];
+            }
+            EyeAggressor aggressor;
+            aggressor.transferFunction = std::move(*aggressorTransfer);
+            aggressor.frequencyHz = *excitation.frequency();
+            aggressor.amplitude = *excitation.amplitude();
+            aggressor.phaseDegrees = excitation.phaseDegrees();
+            aggressor.startTime = excitation.startTime();
+            aggressor.continuous = excitation.durationMode() == ExcitationDurationMode::Continuous;
+            aggressor.duration = excitation.duration();
+            aggressor.ringDown = std::max(0.0, excitationRecordEnd(excitation, simConfig, runDurations, frequency) -
+                                                   (excitation.startTime() + excitation.duration()));
+            aggressors.push_back(std::move(aggressor));
+        }
+        auto eye = computeEyeDiagram(postprocessor.frequencies(), transfer, bitRate, aggressors, noiseOptions,
+                                     test.signalLevel, test.mask);
+        if (!eye.has_value()) return;
+        eyes.push_back({std::move(name), differential, aggressors.size(), std::move(*eye)});
+    };
+
+    // Mixed-mode first. A pair's four ports are left out of the single-ended eyes below: the useful
+    // received quantity is Vp-Vn, not four charts of the pair's individual conductors.
+    std::set<std::int32_t> differentialPorts;
+    for (const DifferentialPairConfig& pair : simConfig.diffPairs()) {
+        if (!pair.correct() || !pair.positiveExcitation().resolvedIndex().has_value() ||
+            !pair.negativeExcitation().resolvedIndex().has_value() || !pair.positiveProbe().resolvedIndex().has_value() ||
+            !pair.negativeProbe().resolvedIndex().has_value()) {
+            continue;
+        }
+        const std::int32_t sp = *pair.positiveExcitation().resolvedIndex();
+        const std::int32_t sn = *pair.negativeExcitation().resolvedIndex();
+        const std::int32_t ep = *pair.positiveProbe().resolvedIndex();
+        const std::int32_t en = *pair.negativeProbe().resolvedIndex();
+        differentialPorts.insert({sp, sn, ep, en});
+        const auto sEpSp = receivedTransfer(ep, sp);
+        const auto sEpSn = receivedTransfer(ep, sn);
+        const auto sEnSp = receivedTransfer(en, sp);
+        const auto sEnSn = receivedTransfer(en, sn);
+        if (!sEpSp || !sEpSn || !sEnSp || !sEnSn || sEpSp->size() != sampleCount || sEpSn->size() != sampleCount ||
+            sEnSp->size() != sampleCount || sEnSn->size() != sampleCount) {
+            continue;
+        }
+        std::vector<std::complex<double>> hdd(sampleCount);
+        for (std::size_t f = 0; f < sampleCount; ++f) {
+            hdd[f] = 0.5 * ((*sEpSp)[f] - (*sEpSn)[f] - (*sEnSp)[f] + (*sEnSn)[f]);
+        }
+        appendEye(pair.displayName(), true, hdd, {sp, sn}, ep, en);
+    }
+
+    std::set<std::int32_t> mainInputs;
+    for (const ExcitationConfig& excitation : simConfig.excitations()) {
+        if (excitation.isMain() && excitation.drivenPortIndex().has_value()) mainInputs.insert(*excitation.drivenPortIndex());
+    }
+    for (const std::int32_t input : mainInputs) {
+        if (differentialPorts.contains(input)) continue;
+        for (std::int32_t output = 0; output < portCount; ++output) {
+            const PortConfig& outputPort = simConfig.ports()[static_cast<std::size_t>(output)];
+            // One eye per probed receiver; an absorb-only termination isn't something asked to be
+            // looked at (see PortConfig::probe()).
+            if (outputPort.excite() || !outputPort.probe() || outputPort.isTraceProbe() ||
+                differentialPorts.contains(output)) {
+                continue;
+            }
+            const auto transfer = receivedTransfer(output, input);
+            if (!transfer.has_value() || transfer->size() != sampleCount) continue;
+            std::string name = "Response at " + outputPort.footprintRef() + " pin " + outputPort.padNumber() +
+                               " \xE2\x80\x94 from " + simConfig.ports()[static_cast<std::size_t>(input)].name();
+            appendEye(std::move(name), false, *transfer, {input}, output, std::nullopt);
+        }
+    }
+    return eyes;
+}
+
+namespace {
+
+/// Seven significant figures: far finer than an eye shows, at any signal level.
+double rounded(double value) {
+    if (!std::isfinite(value) || value == 0.0) return 0.0;
+    const double scale = std::pow(10.0, 6 - std::floor(std::log10(std::fabs(value))));
+    return std::round(value * scale) / scale;
+}
+
+nlohmann::json roundedArray(const std::vector<double>& values) {
+    nlohmann::json array = nlohmann::json::array();
+    for (const double value : values) array.push_back(rounded(value));
+    return array;
+}
+
+nlohmann::json openingJson(const EyeOpening& opening) {
+    return {{"height_v", rounded(opening.heightV)}, {"width_ui", rounded(opening.widthUI)},
+            {"sampling_ui", rounded(opening.samplingUI)}, {"one_level_v", rounded(opening.oneLevelV)},
+            {"zero_level_v", rounded(opening.zeroLevelV)}, {"q_factor", rounded(opening.qFactor)},
+            {"jitter_ui", rounded(opening.jitterUI)}};
+}
+
+nlohmann::json maskJson(const std::optional<EyeMaskResult>& result) {
+    if (!result.has_value()) return nullptr;
+    return {{"traces", result->traceCount}, {"keep_out_violations", result->keepOutViolations},
+            {"outer_limit_violations", result->outerLimitViolations}, {"passed", result->passed()}};
+}
+
+} // namespace
+
+void saveEyeDiagrams(const std::vector<SimulationEye>& eyes, const EyeTestConfig& test,
+                     const std::filesystem::path& path) {
+    nlohmann::json list = nlohmann::json::array();
+    for (const SimulationEye& entry : eyes) {
+        const EyeDiagramData& eye = entry.eye;
+        nlohmann::json traces = nlohmann::json::array();
+        for (const auto& trace : eye.traces) traces.push_back(roundedArray(trace));
+        nlohmann::json noisyTraces = nlohmann::json::array();
+        for (const auto& trace : eye.noisyTraces) noisyTraces.push_back(roundedArray(trace));
+        nlohmann::json noise = nullptr;
+        if (eye.noise.has_value()) {
+            noise = {{"draws", eye.noise->drawCount},
+                     {"replicates", eye.noise->replicateCount},
+                     {"lowest", openingJson(eye.noise->lowest)},
+                     {"highest", openingJson(eye.noise->highest)}};
+        }
+        list.push_back({{"name", entry.name},
+                        {"differential", entry.differential},
+                        {"aggressors", entry.aggressorCount},
+                        {"bit_rate", eye.bitRate},
+                        {"threshold_v", rounded(eye.thresholdV)},
+                        {"time_ui", roundedArray(eye.timeUI)},
+                        {"traces", std::move(traces)},
+                        {"opening", openingJson(eye.opening)},
+                        {"mask", maskJson(eye.maskResult)},
+                        {"noisy_traces", std::move(noisyTraces)},
+                        {"noisy_opening", eye.noisyOpening ? openingJson(*eye.noisyOpening) : nlohmann::json(nullptr)},
+                        {"noisy_mask", maskJson(eye.noisyMaskResult)},
+                        {"noise", std::move(noise)}});
+    }
+    const nlohmann::json document = {{"format", 1}, {"test", test}, {"eyes", std::move(list)}};
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) {
+        logWarning() << "Couldn't write " << pathToUtf8(path);
+        return;
+    }
+    out << document.dump();
 }
 
 } // namespace kiems
