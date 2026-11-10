@@ -64,6 +64,19 @@ public:
     FDTDBackend backend() const { return _backend; }
     void setBackend(FDTDBackend value) { _backend = value; }
 
+    /// --gpu-device DEVICE: the GPU a GPU run uses (index, exact name or part of a name, as
+    /// --list-gpus reports them); empty leaves the choice to Copper.
+    const std::optional<std::string>& gpuDevice() const { return _gpuDevice; }
+    void setGpuDevice(std::optional<std::string> value) { _gpuDevice = std::move(value); }
+
+    /// --list-gpus: print the GPUs a GPU run could use, as JSON, and exit.
+    bool listGPUs() const { return _listGPUs; }
+    void setListGPUs(bool value) { _listGPUs = value; }
+
+    /// --simulation NAME (repeatable): run only these simulations; empty means every one.
+    const std::vector<std::string>& simulations() const { return _simulations; }
+    void addSimulation(std::string name) { _simulations.push_back(std::move(name)); }
+
 private:
     std::optional<std::string> _configPath;
     bool _updateConfig = false;
@@ -81,6 +94,9 @@ private:
     bool _debug = false;
     std::optional<std::string> _logLevel;
     FDTDBackend _backend = FDTDBackend::OpenEMSCPU;
+    std::optional<std::string> _gpuDevice;
+    bool _listGPUs = false;
+    std::vector<std::string> _simulations;
 };
 
 } // namespace kiems

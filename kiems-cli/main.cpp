@@ -31,6 +31,8 @@ void reportUncaughtExceptions();
 
 #include "arguments.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include "kiems/config.hpp"
 #include "kiems/constants.hpp"
 #include "kiems/excitation_postprocess.hpp"
@@ -97,6 +99,9 @@ void printUsage() {
                  "  -d, --debug                Enable debug logging\n"
                  "  -l, --log LEVEL            Set log level (DEBUG, INFO, WARNING, ERROR)\n"
                  "  --backend {cpu,gpu}        [s] FDTD engine: openEMS CPU (default) or Copper GPU\n"
+                 "  --gpu-device DEVICE        [s] GPU for --backend gpu: an index, name, or part of a name\n"
+                 "                                 from --list-gpus [default: the most capable GPU]\n"
+                 "  --list-gpus                Print the GPUs --backend gpu can use, as JSON, and exit\n"
                  "  --dump-early-frames DIR    [s] Diagnostic only, GPU backend: instead of a normal run,\n"
                  "                                 step the first N timesteps one at a time, writing raw\n"
                  "                                 field components + coupling coefficients (cropped to a\n"
@@ -247,6 +252,13 @@ Arguments parseArguments(int argc, char** argv, DumpOptions& dumpOptions) {
                 std::cerr << "argument --backend: invalid choice: '" << tokens[i] << "'\n";
                 printUsageAndExit(2);
             }
+        } else if (tok == "--gpu-device") {
+            if (++i >= tokens.size()) {
+                missingValue(tok);
+            }
+            args.setGpuDevice(tokens[i]);
+        } else if (tok == "--list-gpus") {
+            args.setListGPUs(true);
         } else if (tok == "--dump-early-frames") {
             if (++i >= tokens.size()) {
                 missingValue(tok);
@@ -556,6 +568,37 @@ std::expected<std::uint32_t, std::string> dumpGPUPortInProcess(Simulation& sim, 
     return std::uint32_t{0}; // a diagnostic capture, not a full run
 }
 
+/// --list-gpus: Copper's view of the GPUs, as a JSON array (see copper::CopperGPUDevice) on stdout.
+/// An empty array, with the reason on stderr, when there is no usable GPU engine.
+int listGPUs() {
+    std::string error;
+    const std::vector<copper::CopperGPUDevice> devices = copper::listGPUDevices(&error);
+    nlohmann::json list = nlohmann::json::array();
+    for (const copper::CopperGPUDevice& device : devices) {
+        list.push_back({{"index", device.index},
+                        {"name", device.name},
+                        {"kind", device.kind},
+                        {"api", device.api},
+                        {"memory_bytes", device.memoryBytes},
+                        {"usable", device.usable},
+                        {"problem", device.problem},
+                        {"default", device.isDefault}});
+    }
+    std::cout << list.dump(2) << std::endl;
+    if (devices.empty() && !error.empty()) std::cerr << "No GPU engine available: " << error << "\n";
+    return EXIT_SUCCESS;
+}
+
+/// --gpu-device: Copper reads its device choice from COPPER_VULKAN_DEVICE, both in this process
+/// (the GPU backend runs in-process) and in any worker it starts, which inherits the environment.
+void setGpuDevice(const std::string& device) {
+#if defined(_WIN32)
+    ::_putenv_s("COPPER_VULKAN_DEVICE", device.c_str());
+#else
+    ::setenv("COPPER_VULKAN_DEVICE", device.c_str(), 1);
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -565,6 +608,12 @@ int main(int argc, char** argv) {
 #endif
     DumpOptions dumpOptions;
     Arguments args = parseArguments(argc, argv, dumpOptions);
+    if (args.listGPUs()) {
+        return listGPUs();
+    }
+    if (args.gpuDevice().has_value()) {
+        setGpuDevice(*args.gpuDevice());
+    }
 
     // Every relative path in this tool (fab/, ems/, etc., and -i/-o if given as relative paths) is
     // meant to be relative to simulation.json's own location, not to wherever the tool happened to

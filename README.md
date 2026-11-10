@@ -244,6 +244,16 @@ tools don't use it.
    in its binary cache (`%LOCALAPPDATA%\vcpkg\archives`) and restores them
    from there.
 
+`--backend gpu` runs Copper on the GPU: Metal on macOS, Vulkan on Windows and
+Linux. The Vulkan engine is built when CMake finds volk and `glslangValidator`
+(the Windows presets get both from vcpkg) and needs a GPU driver with Vulkan
+1.2. It picks the discrete GPU if there is one. `kiems --list-gpus` lists the
+GPUs it can use, and `--gpu-device` picks one by its index, name or part of its
+name (or set `COPPER_VULKAN_DEVICE` to the same). Without a usable device a GPU
+run falls back to Copper's CPU engine and says so in its log.
+`copper_vulkan_parity`, built on request, checks the Vulkan engine against the
+CPU engine on synthetic grids.
+
 Plots are drawn with gnuplot; `kiems` also finds it in gnuplot's standard
 install folder when it isn't on `PATH`.
 
