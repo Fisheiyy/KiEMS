@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -49,7 +50,7 @@ void reportUncaughtExceptions();
 // Forward-declare-only boundary header (see its own file comment) -- it keeps Copper's private
 // implementation details out of the CLI while accepting libkiems's CSXCAD geometry. This lets the
 // CLI run Copper's GPU engine in-process (see
-// runGPUPortInProcess() below) instead of posix_spawning copper_fdtd_worker as a separate process --
+// runPortInProcess() below) instead of posix_spawning copper_fdtd_worker as a separate process --
 // the CLI links Copper.framework directly (see the Xcode project's own build settings), while
 // libkiems itself still never does.
 #include "CopperFDTDRunner.h"
@@ -102,6 +103,11 @@ void printUsage() {
                  "  --gpu-device DEVICE        [s] GPU for --backend gpu: an index, name, or part of a name\n"
                  "                                 from --list-gpus [default: the most capable GPU]\n"
                  "  --list-gpus                Print the GPUs --backend gpu can use, as JSON, and exit\n"
+                 "  --field-frames             [s] Store each port's field frames for a field viewer, in\n"
+                 "                                 ems/simulation/<name>/field_frames.kemsf\n"
+                 "  --field-frame-interval N   [s] Timesteps between stored frames [default: 1000]\n"
+                 "  --field-frame-precision {float32,float16,int12,int8}\n"
+                 "                             [s] How stored frames' samples are kept [default: float32]\n"
                  "  --dump-early-frames DIR    [s] Diagnostic only, GPU backend: instead of a normal run,\n"
                  "                                 step the first N timesteps one at a time, writing raw\n"
                  "                                 field components + coupling coefficients (cropped to a\n"
@@ -259,6 +265,28 @@ Arguments parseArguments(int argc, char** argv, DumpOptions& dumpOptions) {
             args.setGpuDevice(tokens[i]);
         } else if (tok == "--list-gpus") {
             args.setListGPUs(true);
+        } else if (tok == "--field-frames") {
+            args.setFieldFrames(true);
+        } else if (tok == "--field-frame-interval") {
+            if (++i >= tokens.size()) {
+                missingValue(tok);
+            }
+            const long interval = std::stol(tokens[i]);
+            if (interval < 1) {
+                std::cerr << "argument --field-frame-interval: must be at least 1\n";
+                printUsageAndExit(2);
+            }
+            args.setFieldFrameInterval(static_cast<std::uint32_t>(interval));
+        } else if (tok == "--field-frame-precision") {
+            if (++i >= tokens.size()) {
+                missingValue(tok);
+            }
+            static const std::vector<std::string> precisions = {"float32", "float16", "int12", "int8"};
+            if (std::find(precisions.begin(), precisions.end(), tokens[i]) == precisions.end()) {
+                std::cerr << "argument --field-frame-precision: invalid choice: '" << tokens[i] << "'\n";
+                printUsageAndExit(2);
+            }
+            args.setFieldFramePrecision(tokens[i]);
         } else if (tok == "--dump-early-frames") {
             if (++i >= tokens.size()) {
                 missingValue(tok);
@@ -484,15 +512,57 @@ void printCopperProgress(const copper::CopperFDTDProgress& progress) {
     logInfo(line.str());
 }
 
-/// The SimulationResult::FDTDPortRunner passed to SimulationResult::run() when
-/// RunOptions::backend == FDTDBackend::CopperGPU -- runs Copper's GPU engine directly in this
-/// process instead of the default sim.run(excitedPortNumber), which posix_spawns a separate worker.
-/// By the time generateResults() (simulation_data.hpp) hands `sim` to this callback, it has already
-/// had adoptSlicedBoard()/adoptGridLines()/populateGeometry()/setupPorts() called on it -- this only needs to
-/// do the FDTD-specific part (prepareRunDirectory()/runFDTDPortOnGPU()), mirroring
-/// copper_fdtd_worker/main.cpp's own sequence; the only difference is *where* it runs: here, in the
-/// CLI's own process, rather than a spawned child's.
-std::expected<std::uint32_t, std::string> runGPUPortInProcess(Simulation& sim, std::int32_t excitedPortNumber) {
+/// --field-frames: how frames are stored, and the series each port wrote, by simulation directory.
+struct FieldFrameCapture {
+    std::uint32_t intervalSteps = 1000;
+    copper::FieldFrameStorage storage;
+    /// The slot (0 or 1) each simulation's series use this run -- the other one than its last
+    /// run's, as the macOS app alternates them, so a viewer with the old series open is never
+    /// reading a file being truncated.
+    std::map<std::filesystem::path, std::uint64_t> slots;
+    std::map<std::filesystem::path, std::vector<std::pair<std::int32_t, std::filesystem::path>>> series;
+};
+
+constexpr const char* kFieldFrameManifest = "field_frames_current.txt";
+constexpr const char* kFieldFramePackage = "field_frames.kemsf";
+
+/// The slot `simulationDirectory`'s last run didn't use, from its manifest's file names.
+std::uint64_t nextFieldFrameSlot(const std::filesystem::path& simulationDirectory) {
+    std::ifstream manifest(simulationDirectory / kFieldFrameManifest);
+    std::string line;
+    while (std::getline(manifest, line)) {
+        if (line.ends_with("_0.h5")) return 1;
+        if (line.ends_with("_1.h5")) return 0;
+    }
+    return 0;
+}
+
+/// Writes each simulation's field-frame manifest: one "port path" line per series, the path
+/// relative to the simulation directory -- the macOS app's field_frames_current.txt.
+void writeFieldFrameManifests(const FieldFrameCapture& capture) {
+    for (const auto& [directory, series] : capture.series) {
+        const std::filesystem::path temporary = directory / (std::string(kFieldFrameManifest) + ".tmp");
+        {
+            std::ofstream out(temporary, std::ios::trunc);
+            for (const auto& [port, path] : series) {
+                out << port << ' ' << path.lexically_relative(directory).generic_string() << '\n';
+            }
+        }
+        std::error_code error;
+        std::filesystem::rename(temporary, directory / kFieldFrameManifest, error);
+        if (error) logWarning("Couldn't write the field-frame manifest in " + pathToUtf8(directory) + ": " + error.message());
+    }
+}
+
+/// The SimulationResult::FDTDPortRunner passed to SimulationResult::run() when the run happens in
+/// this process: always for the GPU backend (`onGPU`), and for the CPU one when field frames are
+/// stored (`capture`), which the worker processes can't do. It replaces the default
+/// sim.run(excitedPortNumber), which spawns a separate worker. By the time generateResults()
+/// (simulation_data.hpp) hands `sim` to this callback it has already had adoptSlicedBoard()/
+/// adoptGridLines()/populateGeometry()/setupPorts() called on it, so this only does the FDTD part
+/// (prepareRunDirectory(), then Copper's run), mirroring copper_fdtd_worker/main.cpp's sequence.
+std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std::int32_t excitedPortNumber, bool onGPU,
+                                                           FieldFrameCapture* capture) {
     const std::filesystem::path cwd = std::filesystem::current_path();
     if (auto result = sim.prepareRunDirectory(excitedPortNumber); !result) {
         return std::unexpected(result.error());
@@ -504,12 +574,46 @@ std::expected<std::uint32_t, std::string> runGPUPortInProcess(Simulation& sim, s
     portConfig.f0 = sim.excitationF0();
     portConfig.fc = sim.excitationFc();
     portConfig.maxTimesteps = sim.maxTimesteps();
+
+    std::optional<copper::FieldFrameSeriesRequest> fieldSeries;
+    if (capture) {
+        // prepareRunDirectory() entered ems/simulation/<name>/<port>.
+        const std::filesystem::path simulationDirectory = probeDir.parent_path();
+        if (!capture->slots.contains(simulationDirectory)) {
+            capture->slots[simulationDirectory] = nextFieldFrameSlot(simulationDirectory);
+        }
+        const std::filesystem::path package = simulationDirectory / kFieldFramePackage;
+        std::error_code error;
+        std::filesystem::create_directories(package, error);
+        if (error) return std::unexpected("Couldn't create " + pathToUtf8(package) + ": " + error.message());
+        // The board's copper spans the substrates, top surface at z = 0 (simulation units to metres).
+        double boardThickness = 0.0;
+        for (const auto& substrate : sim.config().getSubstrates()) boardThickness += substrate.thickness();
+        constexpr double kSimulationUnitsToMetres = constants::baseUnit / static_cast<double>(constants::unitMultiplier);
+        copper::FieldFrameSeriesRequest request;
+        request.path = package / ("port_" + std::to_string(excitedPortNumber) + "_" +
+                                  std::to_string(capture->slots[simulationDirectory]) + ".h5");
+        request.simulationName = pathToUtf8(simulationDirectory.filename());
+        request.excitedPort = excitedPortNumber;
+        request.boardZMin = -boardThickness * kSimulationUnitsToMetres;
+        request.boardZMax = 0.0;
+        request.storage = capture->storage;
+        request.captureIntervalSteps = capture->intervalSteps;
+        fieldSeries = std::move(request);
+    }
+
+    const auto absorbing = static_cast<std::uint32_t>(sim.config().grid().absorbingBoundaryCells());
     const copper::CopperFDTDRunResult gpuResult =
-        copper::runFDTDPortOnGPU(sim.csx(), portConfig, printCopperProgress, cpmlAlphaMax,
-                                  static_cast<std::uint32_t>(sim.config().grid().absorbingBoundaryCells()));
+        onGPU ? copper::runFDTDPortOnGPU(sim.csx(), portConfig, printCopperProgress, cpmlAlphaMax, absorbing, {},
+                                         fieldSeries)
+              : copper::runFDTDPortOnCPU(sim.csx(), portConfig, printCopperProgress, cpmlAlphaMax, absorbing, {},
+                                         fieldSeries);
     std::filesystem::current_path(cwd);
     if (!gpuResult.success) {
         return std::unexpected(gpuResult.errorMessage);
+    }
+    if (capture && gpuResult.fieldFrameSeriesPath) {
+        capture->series[probeDir.parent_path()].emplace_back(excitedPortNumber, *gpuResult.fieldFrameSeriesPath);
     }
 
     // runFDTDPortOnGPU() no longer writes probe files itself -- write them explicitly here so
@@ -527,7 +631,7 @@ std::expected<std::uint32_t, std::string> runGPUPortInProcess(Simulation& sim, s
 }
 
 /// --dump-early-frames/--dump-detailed-trace's own FDTDPortRunner -- same prepareRunDirectory()/
-/// cwd-restore shape as runGPUPortInProcess() above, but calls copper::dumpEarlyFrames() and/or
+/// cwd-restore shape as runPortInProcess() above, but calls copper::dumpEarlyFrames() and/or
 /// copper::dumpDetailedTrace() instead of copper::runFDTDPortOnGPU(): a one-off diagnostic capture,
 /// not a normal run, so there are no probe files to write afterward. dumpEarlyFrames() writes into
 /// `dumpOptions.dir`/port<excitedPortNumber>/ so a multi-port config doesn't clobber one port's dump
@@ -754,22 +858,37 @@ int main(int argc, char** argv) {
             }
             geometryResult = std::move(*loaded);
         }
-        // Copper's GPU backend runs directly in this process (see runGPUPortInProcess()'s own doc
+        // Copper's GPU backend runs directly in this process (see runPortInProcess()'s own doc
         // comment for why, and why libkiems itself still never depends on Copper) rather than
         // posix_spawning copper_fdtd_worker -- the whole point being live progress reporting through
         // this process's own stdout, not a separate process's.
+        // Field frames are written by the run itself, so storing them runs the CPU engine in this
+        // process too.
+        std::optional<FieldFrameCapture> capture;
+        if (args.fieldFrames()) {
+            capture.emplace();
+            capture->intervalSteps = args.fieldFrameInterval();
+            const std::string& precision = args.fieldFramePrecision();
+            capture->storage.precision = precision == "float16" ? copper::FieldSamplePrecision::Float16
+                                       : precision == "int12"   ? copper::FieldSamplePrecision::Int12
+                                       : precision == "int8"    ? copper::FieldSamplePrecision::Int8
+                                                                : copper::FieldSamplePrecision::Float32;
+        }
+        const bool onGPU = options.backend == FDTDBackend::CopperGPU;
         auto result =
-            options.backend != FDTDBackend::CopperGPU
-                ? SimulationResult::run(*geometryResult, options, board)
-                : (dumpRequested
-                       ? SimulationResult::run(*geometryResult, options, board,
-                                                [&dumpOptions](Simulation& sim, std::int32_t excitedPortNumber) {
-                                                    return dumpGPUPortInProcess(sim, excitedPortNumber, dumpOptions);
-                                                })
-                       : SimulationResult::run(*geometryResult, options, board,
-                                                [](Simulation& sim, std::int32_t excitedPortNumber) {
-                                                    return runGPUPortInProcess(sim, excitedPortNumber);
-                                                }));
+            dumpRequested
+                ? SimulationResult::run(*geometryResult, options, board,
+                                        [&dumpOptions](Simulation& sim, std::int32_t excitedPortNumber) {
+                                            return dumpGPUPortInProcess(sim, excitedPortNumber, dumpOptions);
+                                        })
+            : onGPU || capture
+                ? SimulationResult::run(*geometryResult, options, board,
+                                        [&](Simulation& sim, std::int32_t excitedPortNumber) {
+                                            return runPortInProcess(sim, excitedPortNumber, onGPU,
+                                                                    capture ? &*capture : nullptr);
+                                        })
+                : SimulationResult::run(*geometryResult, options, board);
+        if (capture) writeFieldFrameManifests(*capture);
         if (!result) {
             logError(result.error());
             return EXIT_FAILURE;

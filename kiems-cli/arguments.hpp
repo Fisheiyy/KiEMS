@@ -73,6 +73,17 @@ public:
     bool listGPUs() const { return _listGPUs; }
     void setListGPUs(bool value) { _listGPUs = value; }
 
+    /// --field-frames: store each port's field frames for a field viewer, in the simulation's
+    /// field_frames.kemsf package (Copper's frame-series format, as the macOS app writes them).
+    bool fieldFrames() const { return _fieldFrames; }
+    void setFieldFrames(bool value) { _fieldFrames = value; }
+    /// --field-frame-interval N: timesteps between stored frames (the first and last are always stored).
+    std::uint32_t fieldFrameInterval() const { return _fieldFrameInterval; }
+    void setFieldFrameInterval(std::uint32_t value) { _fieldFrameInterval = value; }
+    /// --field-frame-precision: float32 (the default), float16, int12 or int8.
+    const std::string& fieldFramePrecision() const { return _fieldFramePrecision; }
+    void setFieldFramePrecision(std::string value) { _fieldFramePrecision = std::move(value); }
+
     /// --simulation NAME (repeatable): run only these simulations; empty means every one.
     const std::vector<std::string>& simulations() const { return _simulations; }
     void addSimulation(std::string name) { _simulations.push_back(std::move(name)); }
@@ -96,6 +107,9 @@ private:
     FDTDBackend _backend = FDTDBackend::OpenEMSCPU;
     std::optional<std::string> _gpuDevice;
     bool _listGPUs = false;
+    bool _fieldFrames = false;
+    std::uint32_t _fieldFrameInterval = 1000;
+    std::string _fieldFramePrecision = "float32";
     std::vector<std::string> _simulations;
 };
 
