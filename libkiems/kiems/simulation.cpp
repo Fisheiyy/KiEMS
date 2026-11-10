@@ -1126,7 +1126,8 @@ std::expected<void, std::string> Simulation::addReturnBridgePort(PortConfig& por
             stop[across] = *(last - 1);
         }
     }
-    logDebug("Adding return-bridged port " + portConfig.name() + " to pin " + bridge.padNumber + " at start: " +
+    logDebug("Adding return-bridged port " + portConfig.name() + " to " +
+             returnBridgeTarget(portConfig.footprintRef(), bridge) + " at start: " +
              _point3ToString(start) + " end: " + _point3ToString(stop));
     if (portConfig.absorbSignal()) {
         _ports.push_back(std::make_unique<LumpedPort>(*_csx, portNumber, portConfig.impedance(), start, stop,
@@ -1973,7 +1974,8 @@ void Simulation::writeRunDiagnostics(const std::filesystem::path& directory) con
         }
         ports << "\tlayer=" << port.layer() << "->";
         if (const auto& bridge = port.returnBridge()) {
-            ports << "pin " << bridge->padNumber << " (" << bridge->netName << ")"
+            ports << (bridge->padNumber.empty() ? std::string("pour") : "pin " + bridge->padNumber) << " ("
+                  << bridge->netName << ")"
                   << (bridge->corner.has_value() ? " via an L" : " straight") << " above the board\n";
         } else {
             ports << port.plane() << "\n";

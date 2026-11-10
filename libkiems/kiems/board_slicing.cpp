@@ -425,7 +425,9 @@ std::expected<ClassifiedCopper, std::string> classifyCopperForSimulation(const S
                     contribution.companions.push_back(std::move(polygon));
                 };
                 for (const libkicad::CopperPolygon& polygon : geometry.copper) {
-                    if (polygon.footprintRef == port->footprintRef() && polygon.padNumber == bridge.padNumber) {
+                    // A bridge to the pour (no pad number) brings in only its route, below.
+                    if (!bridge.padNumber.empty() && polygon.footprintRef == port->footprintRef() &&
+                        polygon.padNumber == bridge.padNumber) {
                         asPortPad(polygon);
                     }
                 }
@@ -915,10 +917,10 @@ void restrictLumpedComponentsToCutout(SimulationConfig& simulation, const Sliced
             contains(port.returnBridge()->position)) {
             continue;
         }
-        logWarning("Simulation \"" + simulation.name() + "\": port " + port.name() + "'s return pad " +
-                   port.footprintRef() + " pin " + port.returnBridge()->padNumber +
-                   " lies outside the sliced cutout -- falling back to a pad-to-plane port, whose readings and "
-                   "loading will be wrong on its via-in-pad");
+        logWarning("Simulation \"" + simulation.name() + "\": port " + port.name() + "'s return point, " +
+                   returnBridgeTarget(port.footprintRef(), *port.returnBridge()) +
+                   ", lies outside the sliced cutout -- falling back to a pad-to-plane port, whose readings and "
+                   "loading will be wrong");
         port.setReturnBridge(std::nullopt);
     }
     std::vector<std::int32_t> newIndex(ports.size(), -1);

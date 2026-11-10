@@ -30,7 +30,8 @@ enum class FDTDBackend { OpenEMSCPU, CopperGPU };
 /// PortConfig::returnBridge(). Entirely board-derived, so every length here is already in
 /// simulation units, like PortConfig::position(); scaleToSimulationUnits() leaves it alone.
 struct PortReturnBridge {
-    /// The ground pad on the same footprint the element returns to, and its net.
+    /// The ground pad on the same footprint the element returns to, and its net. The pad number is
+    /// empty for a point on the ground pour, where a footprint with no ground pin in reach returns.
     std::string padNumber;
     std::string netName;
     /// That pad's centre.
@@ -42,6 +43,10 @@ struct PortReturnBridge {
     /// Side of each pillar and width of each leg.
     double width = 0;
 };
+
+/// Where a return bridge returns, for messages: "<footprint> pin <n>", or "ground pour" for a point
+/// on the pour (a footprint with no ground pin in reach; its padNumber is empty).
+std::string returnBridgeTarget(const std::string& footprintRef, const PortReturnBridge& bridge);
 
 /// Class representing a single simulation port. Never (de)serialized directly -- populated by
 /// port_resolution.cpp from a SimulationConfig's InvolvedNetConfig entries, one instance per pad

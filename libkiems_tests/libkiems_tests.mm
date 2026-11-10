@@ -2634,6 +2634,21 @@ static kiems::BridgePad bridgeBall(const std::string& number, const std::string&
     XCTAssertEqualWithAccuracy(plans[0]->width, 1800, 1e-9);
 }
 
+- (void)testReturnBridgeToAPourPointIsPlannedAndNamedAsPour {
+    // A passive with no ground pin returns to points on the pour, which carry no pad number.
+    kiems::ReturnBridgeRequest request;
+    request.pad = {"2", "SIG", 0, 0, 6000};
+    request.returnPads = {{"", "GND", 0, 16000, 6000}};
+    const auto plans = kiems::planReturnBridges({request}, 50000);
+    XCTAssertTrue(plans[0].has_value());
+    XCTAssertTrue(plans[0]->padNumber.empty());
+    XCTAssertEqual(plans[0]->netName, "GND");
+    XCTAssertTrue(kiems::returnBridgeTarget("R9", *plans[0]) == "ground pour");
+    kiems::PortReturnBridge pin = *plans[0];
+    pin.padNumber = "10";
+    XCTAssertTrue(kiems::returnBridgeTarget("U1", pin) == "U1 pin 10");
+}
+
 - (void)testReturnBridgeTakesAnLToTheNearestDiagonalGroundPad {
     kiems::ReturnBridgeRequest request;
     request.pad = bridgeBall("P3", "DDR_A0", 0, 0);

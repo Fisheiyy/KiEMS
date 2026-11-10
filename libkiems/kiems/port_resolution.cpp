@@ -771,6 +771,9 @@ std::expected<std::optional<std::string>, std::string> _validateDiffPairSide(
 /// package, whose address balls sit up to ~5 mm (Manhattan) from the nearest VSS. A longer route
 /// would add a loop no real package has.
 constexpr double kMaxReturnBridgeDistanceMm = 5.0;
+/// How far a bridge looks for ground pour when its footprint has no ground pin: a couple of
+/// millimetres, as a component's own return through a nearby via or pour would be.
+constexpr double kMaxPourReturnDistanceMm = 2.0;
 
 /// One piece of planned bridge metal, as an axis-aligned rectangle already grown by its clearance.
 struct _BridgeShape {
@@ -800,12 +803,23 @@ bool _bridgeShapesClash(const _BridgeShape& a, const _BridgeShape& b) {
 }
 
 /// Board geometry the return-bridge pass reads, loaded the first time a simulation needs it.
+/// One contour of net-owned copper (a hole when it lies inside its net's copper), in the
+/// simulation frame, with its bounding box.
+struct _CopperContour {
+    std::string net;
+    std::int32_t layer = 0;
+    std::vector<std::pair<double, double>> points;
+    double xMin = 0, yMin = 0, xMax = 0, yMax = 0;
+};
+
 struct _ReturnBridgeBoard {
     std::vector<ViaHole> vias;
     std::unordered_map<std::string, std::vector<PadIdentity>> padsByFootprint;
+    std::vector<_CopperContour> copper;
 };
 
-std::expected<_ReturnBridgeBoard, std::string> _loadReturnBridgeBoard(const libkicad::Board& board,
+std::expected<_ReturnBridgeBoard, std::string> _loadReturnBridgeBoard(const EMSConfig& config,
+                                                                      const libkicad::Board& board,
                                                                       const Position& origin) {
     _ReturnBridgeBoard result;
     auto vias = getVias(board, origin.x(), origin.y());
@@ -814,7 +828,140 @@ std::expected<_ReturnBridgeBoard, std::string> _loadReturnBridgeBoard(const libk
     auto pads = board.allPads();
     if (!pads) return std::unexpected(std::move(pads).error());
     for (PadIdentity& pad : *pads) result.padsByFootprint[pad.footprintRef].push_back(std::move(pad));
+    auto geometry = board.boardGeometry();
+    if (!geometry) return std::unexpected(std::move(geometry).error());
+    for (const libkicad::CopperPolygon& polygon : geometry->copper) {
+        const auto layer = config.metalLayerIndexForFileName(_normalizeLayerName(polygon.copperLayerName));
+        if (!layer || polygon.loop.pointsMm.size() < 3) continue;
+        _CopperContour contour;
+        contour.net = _unescapeForDisplay(polygon.netName);
+        contour.layer = *layer;
+        contour.xMin = contour.yMin = std::numeric_limits<double>::infinity();
+        contour.xMax = contour.yMax = -std::numeric_limits<double>::infinity();
+        for (const auto& [xMm, yMm] : polygon.loop.pointsMm) {
+            const double x = _mmToSimUnits(xMm) - origin.x(), y = _mmToSimUnits(yMm) - origin.y();
+            contour.points.emplace_back(x, y);
+            contour.xMin = std::min(contour.xMin, x);
+            contour.xMax = std::max(contour.xMax, x);
+            contour.yMin = std::min(contour.yMin, y);
+            contour.yMax = std::max(contour.yMax, y);
+        }
+        result.copper.push_back(std::move(contour));
+    }
     return result;
+}
+
+/// The nets whose copper on metal `layer` covers (x, y): those an odd number of whose contours,
+/// holes included, contain it. Copper on no net is "".
+std::vector<std::string> _netsCoveringAt(const std::vector<_CopperContour>& copper, std::int32_t layer, double x,
+                                         double y) {
+    std::unordered_map<std::string, int> crossings;
+    for (const _CopperContour& contour : copper) {
+        if (contour.layer != layer || x < contour.xMin || x > contour.xMax || y < contour.yMin || y > contour.yMax) {
+            continue;
+        }
+        bool inside = false;
+        const auto& points = contour.points;
+        for (std::size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+            const auto [xi, yi] = points[i];
+            const auto [xj, yj] = points[j];
+            if ((yi > y) != (yj > y) && x < xi + (y - yi) * (xj - xi) / (yj - yi)) inside = !inside;
+        }
+        if (inside) ++crossings[contour.net];
+    }
+    std::vector<std::string> nets;
+    for (const auto& [net, count] : crossings) {
+        if (count % 2 == 1) nets.push_back(net);
+    }
+    return nets;
+}
+
+/// Whether any of `nets`' copper on metal `layer` covers (x, y).
+bool _netCopperAt(const std::vector<_CopperContour>& copper, const std::unordered_set<NetName, NetNameHash>& nets,
+                  std::int32_t layer, double x, double y) {
+    return std::ranges::any_of(_netsCoveringAt(copper, layer, x, y),
+                               [&](const std::string& net) { return nets.contains(NetName(net)); });
+}
+
+/// What a pad-to-plane column for `port` would land on at its reference plane: the share of its
+/// footprint over ground copper, and whether any other copper -- another net's, its own, or copper
+/// on no net -- lies under it. The column's end cap is metal across that whole footprint, so it
+/// joins whatever it touches.
+struct _PlaneUnderColumn {
+    double groundShare = 0;
+    bool otherCopper = false;
+};
+
+_PlaneUnderColumn _planeUnderColumn(const PortConfig& port, const std::vector<_CopperContour>& copper,
+                                    const std::unordered_set<NetName, NetNameHash>& groundNets) {
+    const PortGridFootprint footprint = portGridFootprint(port);
+    const double width = footprint.width * constants::unitMultiplier;
+    const double height = footprint.height * constants::unitMultiplier;
+    constexpr int kSamples = 9;
+    _PlaneUnderColumn result;
+    int ground = 0;
+    for (int i = 0; i < kSamples; ++i) {
+        for (int j = 0; j < kSamples; ++j) {
+            const double x = footprint.centerX + width * ((i + 0.5) / kSamples - 0.5);
+            const double y = footprint.centerY + height * ((j + 0.5) / kSamples - 0.5);
+            bool onGround = false;
+            for (const std::string& net : _netsCoveringAt(copper, port.plane(), x, y)) {
+                if (groundNets.contains(NetName(net))) onGround = true;
+                else result.otherCopper = true;
+            }
+            ground += onGround ? 1 : 0;
+        }
+    }
+    result.groundShare = static_cast<double>(ground) / (kSamples * kSamples);
+    return result;
+}
+
+/// The share of a column's footprint that must be over ground for the column to return through it.
+constexpr double kMinColumnGroundShare = 0.5;
+
+/// Return points on ground pour for `pad` on metal `layer`, for a footprint with no ground pin in
+/// reach (a resistor or capacitor on a two-layer board): the nearest points, on a grid of a tenth of
+/// a millimetre within `reach` (Manhattan), with ground copper half a pad width all round them -- the
+/// return pillar is half a pad wide, so its corners and a little mesh snapping stay on the pour.
+/// Their padNumber is empty: they're no pin.
+std::vector<BridgePad> _pourReturnPoints(const std::vector<_CopperContour>& copper,
+                                         const std::unordered_set<NetName, NetNameHash>& groundNets,
+                                         std::int32_t layer, const BridgePad& pad, double reach) {
+    constexpr std::size_t kMaxPoints = 32;
+    const double step = _mmToSimUnits(0.1);
+    const double margin = pad.size / 2;
+    const auto steps = static_cast<int>(reach / step);
+    std::vector<std::pair<double, std::pair<double, double>>> found;
+    for (int i = -steps; i <= steps; ++i) {
+        for (int j = -(steps - std::abs(i)); j <= steps - std::abs(i); ++j) {
+            const double x = pad.x + i * step, y = pad.y + j * step;
+            const double distance = std::abs(x - pad.x) + std::abs(y - pad.y);
+            // Clear of the pad itself, whose own pillar stands there.
+            if (distance < 2 * pad.size) continue;
+            bool covered = _netCopperAt(copper, groundNets, layer, x, y);
+            for (int k = 0; covered && k < 8; ++k) {
+                const double angle = k * std::numbers::pi / 4;
+                covered = _netCopperAt(copper, groundNets, layer, x + margin * std::cos(angle),
+                                       y + margin * std::sin(angle));
+            }
+            if (covered) found.push_back({distance, {x, y}});
+        }
+    }
+    std::ranges::sort(found);
+    std::vector<BridgePad> points;
+    for (const auto& [distance, at] : found) {
+        if (points.size() == kMaxPoints) break;
+        std::string net;
+        for (const _CopperContour& contour : copper) {
+            if (contour.layer == layer && groundNets.contains(NetName(contour.net)) &&
+                _netCopperAt(copper, {NetName(contour.net)}, layer, at.first, at.second)) {
+                net = contour.net;
+                break;
+            }
+        }
+        points.push_back({std::string(), net, at.first, at.second, pad.size});
+    }
+    return points;
 }
 
 /// Whether any via barrel (drill plus plating) reaches into the XY footprint of `port`'s vertical
@@ -846,10 +993,14 @@ BridgePad _bridgePad(const PadIdentity& pad, const Position& origin) {
             _mmToSimUnits(std::min(pad.widthMm, pad.heightMm))};
 }
 
-/// Gives every pin port whose vertical column would swallow a via barrel a return bridge instead
-/// (see PortConfig::returnBridge()). Each side of the board's bridges is planned together, so none
-/// of them can touch. A port with no ground pad close enough, or no clear route to one, keeps its
-/// column, with a warning: its readings and its loading will be wrong.
+/// Gives a pin port a return bridge (see PortConfig::returnBridge()) instead of a vertical column
+/// when the column would swallow a via barrel, or when its reference plane isn't ground under it --
+/// under kMinColumnGroundShare of its footprint over ground, or any other copper there. That is
+/// common on a two-layer board, where the other side is routing as much as pour: the column's end
+/// cap would join whatever copper it lands on, another net's included, or float. Each side of
+/// the board's bridges is planned together, so none of them can touch. A port with no ground pad
+/// close enough, or no clear route to one, keeps its column, with a warning: its readings and its
+/// loading will be wrong.
 void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const _ReturnBridgeBoard& data,
                           const std::unordered_set<NetName, NetNameHash>& groundNets, const Position& origin) {
     const auto metalCount = static_cast<std::int32_t>(config.getMetals().size());
@@ -866,13 +1017,20 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
         });
         std::vector<std::size_t> portIndices;
         std::vector<ReturnBridgeRequest> requests;
+        std::vector<bool> planeMissing;
         for (const std::size_t index : order) {
             const PortConfig& port = sim.ports()[index];
             if (port.isTraceProbe() || port.footprintRef().empty() || port.layer() != side ||
-                !port.position().has_value() || !port.direction().has_value() ||
-                !_columnHitsViaBarrel(port, data.vias, plating)) {
+                !port.position().has_value() || !port.direction().has_value()) {
                 continue;
             }
+            const bool hitsVia = _columnHitsViaBarrel(port, data.vias, plating);
+            bool noPlane = false;
+            if (!hitsVia) {
+                const _PlaneUnderColumn under = _planeUnderColumn(port, data.copper, groundNets);
+                noPlane = under.otherCopper || under.groundShare < kMinColumnGroundShare;
+            }
+            if (!hitsVia && !noPlane) continue;
             const auto footprintPads = data.padsByFootprint.find(port.footprintRef());
             if (footprintPads == data.padsByFootprint.end()) continue;
             const auto own = std::ranges::find(footprintPads->second, port.padNumber(), &PadIdentity::padNumber);
@@ -886,9 +1044,18 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
                 }
                 request.returnPads.push_back(_bridgePad(candidate, origin));
             }
-            sim.ports()[index].setColumnHitsVia(true);
+            // A footprint with no ground pin in reach -- a passive, say -- returns to the pour.
+            const double reach = _mmToSimUnits(kMaxReturnBridgeDistanceMm);
+            if (std::ranges::none_of(request.returnPads, [&](const BridgePad& candidate) {
+                    return std::abs(candidate.x - request.pad.x) + std::abs(candidate.y - request.pad.y) <= reach;
+                })) {
+                request.returnPads = _pourReturnPoints(data.copper, groundNets, side, request.pad,
+                                                       _mmToSimUnits(kMaxPourReturnDistanceMm));
+            }
+            if (hitsVia) sim.ports()[index].setColumnHitsVia(true);
             portIndices.push_back(index);
             requests.push_back(std::move(request));
+            planeMissing.push_back(noPlane);
         }
         if (requests.empty()) continue;
 
@@ -898,23 +1065,28 @@ void _assignReturnBridges(const EMSConfig& config, SimulationConfig& sim, const 
             PortConfig& port = sim.ports()[portIndices[i]];
             if (!plans[i].has_value()) {
                 logWarning("Simulation \"" + sim.name() + "\": port " + port.name() +
-                           " sits on a via, so a pad-to-plane port would replace the via's barrel, but no ground "
+                           (planeMissing[i]
+                                ? " has too little ground, or other copper, opposite it on its reference plane, so "
+                                  "a pad-to-plane port would return through the wrong copper, but no ground "
+                                : " sits on a via, so a pad-to-plane port would replace the via's barrel, but no "
+                                  "ground ") +
                            "pad on " + port.footprintRef() + " within " +
                            std::to_string(static_cast<int>(kMaxReturnBridgeDistanceMm)) +
-                           " mm has a clear route -- " +
-                           (port.excite() || port.probe() || port.isTraceProbe()
+                           " mm, nor ground pour nearby, has a clear route -- " +
+                           (port.excite() || port.probe() || port.isTraceProbe() || planeMissing[i]
                                 ? std::string("its readings and loading will be wrong")
                                 : std::string("dropping it")));
                 continue;
             }
             ++bridged;
             logDebug("Simulation \"" + sim.name() + "\": port " + port.name() + " returns to " +
-                     port.footprintRef() + " pin " + plans[i]->padNumber +
+                     returnBridgeTarget(port.footprintRef(), *plans[i]) +
                      (plans[i]->corner.has_value() ? " through an L route" : " in a straight run"));
             port.setReturnBridge(plans[i]);
         }
         logInfo("Simulation \"" + sim.name() + "\": " + std::to_string(bridged) + " of " +
-                std::to_string(plans.size()) + " port(s) on via-in-pad pads bridged to a ground pad on " +
+                std::to_string(plans.size()) +
+                " port(s) on via-in-pad pads or with no plane opposite bridged to a ground pad on " +
                 (side == 0 ? "the top" : "the bottom"));
     }
 }
@@ -1783,7 +1955,7 @@ std::expected<void, std::string> resolveSimulationPorts(EMSConfig& config, const
         const bool hasPinPorts = std::ranges::any_of(
             sim.ports(), [](const PortConfig& port) { return !port.isTraceProbe() && !port.footprintRef().empty(); });
         if (hasPinPorts && !returnBridgeBoard.has_value()) {
-            auto loaded = _loadReturnBridgeBoard(board, edgeCutsOrigin);
+            auto loaded = _loadReturnBridgeBoard(config, board, edgeCutsOrigin);
             if (!loaded) return std::unexpected(std::move(loaded).error());
             returnBridgeBoard = std::move(*loaded);
         }

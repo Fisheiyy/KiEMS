@@ -16,6 +16,10 @@ namespace kiems {
 
 using namespace Cu;
 
+std::string returnBridgeTarget(const std::string& footprintRef, const PortReturnBridge& bridge) {
+    return bridge.padNumber.empty() ? std::string("ground pour") : footprintRef + " pin " + bridge.padNumber;
+}
+
 namespace {
 
 std::vector<std::string> _splitDot(const std::string& s) {
