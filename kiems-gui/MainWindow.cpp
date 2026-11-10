@@ -12,6 +12,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
@@ -31,6 +32,8 @@
 #include <QStatusBar>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace kiems_gui {
 
@@ -98,14 +101,29 @@ MainWindow::MainWindow() {
     _pages = new QStackedWidget;
     _emptyPage = new QLabel(tr("Open or create a simulation document (File menu) to begin."));
     static_cast<QLabel*>(_emptyPage)->setAlignment(Qt::AlignCenter);
+    // The layer list floats over the board's top-left corner with nothing behind it, as on macOS.
     _boardPage = new QWidget;
-    auto* boardLayout = new QHBoxLayout(_boardPage);
+    auto* boardLayout = new QGridLayout(_boardPage);
     boardLayout->setContentsMargins(0, 0, 0, 0);
-    _layerList = new QListWidget;
-    _layerList->setMaximumWidth(170);
     _boardView = new BoardView;
-    boardLayout->addWidget(_layerList);
-    boardLayout->addWidget(_boardView, 1);
+    _layerList = new QListWidget;
+    _layerList->setFrameShape(QFrame::NoFrame);
+    _layerList->setAutoFillBackground(false);
+    _layerList->viewport()->setAutoFillBackground(false);
+    {
+        // Transparent through the palette rather than a style sheet, which would also strip the
+        // style's checkbox frames.
+        QPalette transparent = _layerList->palette();
+        transparent.setColor(QPalette::Base, Qt::transparent);
+        transparent.setColor(QPalette::AlternateBase, Qt::transparent);
+        _layerList->setPalette(transparent);
+    }
+    _layerList->setSelectionMode(QAbstractItemView::NoSelection);
+    _layerList->setFocusPolicy(Qt::NoFocus);
+    _layerList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    _layerList->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    boardLayout->addWidget(_boardView, 0, 0);
+    boardLayout->addWidget(_layerList, 0, 0, Qt::AlignTop | Qt::AlignLeft);
     _resultsView = new ResultsView;
     _pages->addWidget(_emptyPage);
     _pages->addWidget(_boardPage);
@@ -515,6 +533,11 @@ void MainWindow::populateLayerList() {
         item->setCheckState(_boardView->isLayerVisible(layer) ? Qt::Checked : Qt::Unchecked);
     }
     _layerList->blockSignals(false);
+    // Exactly as big as its rows, so the board stays clickable everywhere else.
+    const int rows = _layerList->count();
+    const int rowHeight = rows > 0 ? _layerList->sizeHintForRow(0) : 0;
+    _layerList->setFixedSize(_layerList->sizeHintForColumn(0) + 12,
+                             std::min(rows * rowHeight + 4, std::max(_boardPage->height() - 8, rowHeight * 4)));
 }
 
 void MainWindow::updateTitle() {
