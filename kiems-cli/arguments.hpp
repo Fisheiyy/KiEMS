@@ -84,6 +84,11 @@ public:
     const std::string& fieldFramePrecision() const { return _fieldFramePrecision; }
     void setFieldFramePrecision(std::string value) { _fieldFramePrecision = std::move(value); }
 
+    /// --dc [NAME...]: run these DC power analyses (the document's "dc_analyses"); with no names,
+    /// every one. Unset when --dc wasn't given.
+    const std::optional<std::vector<std::string>>& dcAnalyses() const { return _dcAnalyses; }
+    void setDCAnalyses(std::vector<std::string> names) { _dcAnalyses = std::move(names); }
+
     /// --simulation NAME (repeatable): run only these simulations; empty means every one.
     const std::vector<std::string>& simulations() const { return _simulations; }
     void addSimulation(std::string name) { _simulations.push_back(std::move(name)); }
@@ -108,6 +113,7 @@ private:
     std::optional<std::string> _gpuDevice;
     bool _listGPUs = false;
     bool _fieldFrames = false;
+    std::optional<std::vector<std::string>> _dcAnalyses;
     std::uint32_t _fieldFrameInterval = 1000;
     std::string _fieldFramePrecision = "float32";
     std::vector<std::string> _simulations;

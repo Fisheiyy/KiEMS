@@ -38,6 +38,8 @@ endif()
 
 find_package(nlohmann_json REQUIRED)
 find_package(GEOS REQUIRED)
+# The DC power analysis meshes copper with CGAL Mesh_2 (CSXCAD depends on CGAL too).
+find_package(CGAL REQUIRED)
 find_package(Matplot++ QUIET CONFIG)
 if(NOT Matplot++_FOUND)
     message(FATAL_ERROR
@@ -82,7 +84,9 @@ target_link_libraries(libkiems
         CopperUtils
         nlohmann_json::nlohmann_json
         GEOS::geos_c
-        Matplot++::matplot)
+        Matplot++::matplot
+    PRIVATE
+        CGAL::CGAL)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # GCC emits an ABI-transition advisory for ordinary std::pair use; it does not indicate an
@@ -127,6 +131,9 @@ if(WIN32)
 endif()
 add_kiems_tool(kiems_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/kiems_fdtd_worker/main.cpp")
 add_kiems_tool(copper_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/copper_fdtd_worker/main.cpp")
+# The DC power analysis solver's analytic checks: plain C++, so they run on every platform.
+add_kiems_tool(dc_analysis_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/libkiems/dc_analysis_tests.cpp")
+target_include_directories(dc_analysis_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/submodules/Copper/CopperUtils")
 
 if(KIEMS_BUILD_GUI)
     include(GNUInstallDirs)
@@ -134,6 +141,8 @@ if(KIEMS_BUILD_GUI)
 endif()
 
 if(KIEMS_BUILD_TESTS)
+    enable_testing()
+    add_test(NAME dc_analysis_tests COMMAND dc_analysis_tests)
     if(APPLE)
         enable_language(OBJCXX)
         enable_testing()

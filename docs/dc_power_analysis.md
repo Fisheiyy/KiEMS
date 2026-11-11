@@ -1,12 +1,63 @@
 # DC power analysis (IR drop and current density): research notes
 
-Status: research, plus a validated Python prototype in [`Scripts/dc_prototype/`](../Scripts/dc_prototype/).
-None of this is in libkiems yet.
+Status: step 1 of the [order of work](#order-of-work) is built: the libkiems solver and
+`kiems --dc` (see [What's built](#whats-built)). The research notes and the Python prototype in
+[`Scripts/dc_prototype/`](../Scripts/dc_prototype/) follow.
 
 The goal is a DC power-integrity check like Altium's *Power Analyzer by Keysight*. You name a
 power rail, where its power comes from, and what draws from it. KiEMS then shows how far the
 voltage sags at every load, where the copper is overloaded, and which vias carry too much
 current.
+
+## What's built
+
+- **The solver: [`libkiems/kiems/dc_analysis.hpp`](../libkiems/kiems/dc_analysis.hpp).**
+  - **Mesh.** Each layer's copper for the net is unioned, then meshed with CGAL `Mesh_2`
+    (minimum angle about 20.7°, a maximum element size, 0.5 mm by default), with linear
+    elements.
+  - **Outline clean-up.** Outlines are snapped to a 1 µm grid before meshing. GEOS unions leave
+    nanometre edges where pieces meet, and refinement can't split those; it spins forever.
+  - **Pads and rings.** Pads and annular rings are seeded as mesh points, not as constrained
+    outlines, because a pad's outline mostly runs along the copper's own and nearly coincident
+    constraints have the same effect.
+  - **Equipotential nodes.** A source's pad is one node held at its voltage. Each barrel's ring is
+    one node per layer, joined by `ρL/(π(d+p)p)`.
+  - **Load pads.** By default a load's pad is one node: the soldered lead ties it together.
+    `"load_pads": "distributed"` draws the load evenly from the pad's copper instead.
+  - **Solve.** The system is solved by conjugate gradients with an IC(0) preconditioner. This
+    avoids an Eigen dependency, which the Xcode build has no include path for.
+  - **Islands.** Copper with no source is found first and reported, not solved.
+- **From a board: [`dc_board.hpp`](../libkiems/kiems/dc_board.hpp).**
+  - Analyses live in the document's `dc_analyses` array.
+  - `buildProblem()` takes the net's copper, plated holes and pads, and the stackup, from libkicad.
+  - `automaticAnalysis()` starts from the pin types.
+- **The CLI.** `kiems --dc [NAME...]` writes `ems/dc/<name>/result.json` plus voltage and
+  current-density maps per layer.
+- **Checks:** [`tests/libkiems/dc_analysis_tests.cpp`](../tests/libkiems/dc_analysis_tests.cpp)
+  (CTest `dc_analysis_tests`).
+  - **Strip:** exact away from the pads, and the drop within 0.1 %.
+  - **Distributed-load strip:** within 0.3 %.
+  - **Disc spreading resistance:** within 0.5 %.
+  - **Via chain:** exact barrel current and resistance.
+  - **Islands:** detected and reported.
+
+**Against the prototype on StickHub +5V** (U2 pin 5 at 5 V, each USB port's pin 1 drawing
+0.5 A; the worst port is J8):
+
+| | FEM, equipotential pads | FEM, distributed pads | Raster, distributed pads |
+|---|---|---|---|
+| J8 sag | 67.6 mV | 75.2 mV | 79.2 / 77.5 / 76.5 mV at h = 0.05 / 0.025 / 0.0125, extrapolating to about 75.0 |
+| J2 sag | 11.2 mV | 12.1 mV | 12.8 / 12.7 / 12.4 mV, about 12.1 |
+| Busiest via | 3.5 A | 3.5 A | 3.5 A |
+| Unknowns, time | 2 k, 0.03 s | 2 k, 0.03 s | 340 k, 2.8 s at h = 0.0125 |
+
+- **Agreement.** With the same pad model the two methods agree within 1 %. The FEM sag changes
+  by under 1 % from a 0.5 mm to a 0.025 mm element size.
+- **The pad model matters.** The +5V trace runs through each connector's pad on its way to the
+  next. Tying each pad together, as its soldered pin does, takes about 10 % off the far ports'
+  sag.
+- **Ground return.** It takes 18 k unknowns and 0.4 s, and gives 3–5 mV at the ports, as the
+  prototype did.
 
 ## What the reference tool does
 
@@ -200,7 +251,7 @@ as `Current` could be read later, through the netlist path that the simulation m
 
 ## Order of work
 
-1. libkiems:
+1. *(Done; see [What's built](#whats-built).)* libkiems:
    - mesher plus P1 assembly plus Eigen solve for one rail with fixed sources and per-pin loads;
    - the analytic tests;
    - CLI output (JSON plus PNG).

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -40,6 +41,7 @@ void reportUncaughtExceptions();
 #include "kiems/geometry_result.hpp"
 #include "kiems/importer.hpp"
 #include "logging.hpp"
+#include "kiems/dc_board.hpp"
 #include "kiems/path_utf8.hpp"
 #include "kiems/paths_config.hpp"
 #include "kiems/port_resolution.hpp"
@@ -85,6 +87,9 @@ void printUsage() {
                  "  -p, --postprocess          Postprocess the data\n"
                  "  -a, --all                  Execute all steps (geometry, simulation, postprocessing)\n"
                  "  --simulation NAME          Run only the named simulation (repeatable) [default: all]\n"
+                 "  --dc [NAME...]             Run the named DC power analyses (IR drop and current\n"
+                 "                                 density) from the config's dc_analyses [default: all],\n"
+                 "                                 writing ems/dc/<name>/result.json and per-layer maps\n"
                  "  --export-field, --ef [...] [s] Export electric field data from the simulation\n"
                  "  --oversampling N           [s] Field dump time-oversampling (default: 4)\n"
                  "  --absorbing-boundary-cells N\n"
@@ -265,6 +270,10 @@ Arguments parseArguments(int argc, char** argv, DumpOptions& dumpOptions) {
             args.setGpuDevice(tokens[i]);
         } else if (tok == "--list-gpus") {
             args.setListGPUs(true);
+        } else if (tok == "--dc") {
+            std::vector<std::string> names;
+            while (i + 1 < tokens.size() && !looksLikeFlag(tokens[i + 1])) names.push_back(tokens[++i]);
+            args.setDCAnalyses(std::move(names));
         } else if (tok == "--field-frames") {
             args.setFieldFrames(true);
         } else if (tok == "--field-frame-interval") {
@@ -559,6 +568,94 @@ void printCopperProgress(const copper::CopperFDTDProgress& progress) {
         break;
     }
     logInfo(line.str());
+}
+
+/// --dc: runs the document's DC power analyses named in `names` (every one if it's empty), each
+/// into ems/dc/<name>/. Returns the process's exit status.
+int runDCAnalyses(const std::vector<std::string>& names, const std::filesystem::path& cfgPath, const PathsConfig& paths,
+                  libkicad::Runtime& runtime) {
+    nlohmann::json document;
+    try {
+        std::ifstream file(cfgPath);
+        document = nlohmann::json::parse(file);
+    } catch (const std::exception& exception) {
+        logError("Couldn't read " + pathToUtf8(cfgPath) + ": " + exception.what());
+        return EXIT_FAILURE;
+    }
+    std::vector<dc::AnalysisConfig> analyses;
+    try {
+        analyses = dc::analysesIn(document);
+    } catch (const std::exception& exception) {
+        logError(std::string("The config's dc_analyses can't be read: ") + exception.what());
+        return EXIT_FAILURE;
+    }
+    for (const std::string& name : names) {
+        if (std::none_of(analyses.begin(), analyses.end(), [&](const dc::AnalysisConfig& a) { return a.name == name; })) {
+            logError("No DC analysis named \"" + name + "\" in " + pathToUtf8(cfgPath));
+            return EXIT_FAILURE;
+        }
+    }
+    if (analyses.empty()) {
+        logError("The config has no dc_analyses to run.");
+        return EXIT_FAILURE;
+    }
+    const libkicad::Board board(runtime, paths.kicadBoardPaths());
+    int status = EXIT_SUCCESS;
+    for (const dc::AnalysisConfig& analysis : analyses) {
+        if (!names.empty() && std::find(names.begin(), names.end(), analysis.name) == names.end()) continue;
+        logInfo("### DC analysis \"" + analysis.name + "\" of " + analysis.net + " ###");
+        auto problem = dc::buildProblem(board, analysis);
+        if (!problem) {
+            logError(analysis.name + ": " + problem.error());
+            status = EXIT_FAILURE;
+            continue;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        auto result = dc::solve(*problem);
+        if (!result) {
+            logError(analysis.name + ": " + result.error());
+            status = EXIT_FAILURE;
+            continue;
+        }
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        std::ostringstream summary;
+        summary.precision(4);
+        summary << analysis.name << ": " << result->unknowns << " unknowns, " << result->iterations
+                << " iterations, " << seconds << " s; " << result->powerLoss * 1e3 << " mW lost in the copper";
+        logInfo(summary.str());
+        for (const dc::TerminalResult& terminal : result->terminals) {
+            std::ostringstream line;
+            line.precision(6);
+            line << "  " << (terminal.kind == dc::Terminal::Kind::Source ? "source " : "load   ") << terminal.name << ": "
+                 << terminal.voltage << " V, " << terminal.current << " A";
+            logInfo(line.str());
+        }
+        for (const dc::LayerResult& layer : result->layers) {
+            if (layer.triangles.empty()) continue;
+            std::ostringstream line;
+            line.precision(4);
+            line << "  " << layer.name << ": " << layer.triangles.size() << " elements, up to "
+                 << layer.maxCurrentDensity << " A/mm^2";
+            logInfo(line.str());
+        }
+        const auto worst = std::max_element(result->barrels.begin(), result->barrels.end(),
+                                            [](const dc::BarrelResult& a, const dc::BarrelResult& b) { return a.current < b.current; });
+        if (worst != result->barrels.end() && worst->connected) {
+            std::ostringstream line;
+            line.precision(4);
+            line << "  the most current through one barrel: " << worst->current << " A, " << worst->name;
+            logInfo(line.str());
+        }
+        for (const std::string& warning : result->warnings) logWarning(analysis.name + ": " + warning);
+        const std::filesystem::path directory = paths.baseDir / "dc" / simulationDirectoryName(analysis.name);
+        if (auto written = dc::writeResult(*result, analysis, directory); !written) {
+            logError(written.error());
+            status = EXIT_FAILURE;
+            continue;
+        }
+        logInfo("  written to " + pathToUtf8(directory));
+    }
+    return status;
 }
 
 /// --field-frames: how frames are stored, and the series each port wrote, by simulation directory.
@@ -860,8 +957,15 @@ int runCli(int argc, char** argv) {
         });
     }
 
+    if (args.dcAnalyses()) {
+        if (const int status = runDCAnalyses(*args.dcAnalyses(), cfgPath, paths, *runtime); status != EXIT_SUCCESS) {
+            return status;
+        }
+        if (!args.geometry() && !args.simulate() && !args.postprocess() && !args.all()) return EXIT_SUCCESS;
+    }
+
     if (!args.geometry() && !args.simulate() && !args.postprocess() && !args.all()) {
-        logInfo(R"(No steps selected. Exiting. To select steps use "-g", "-s", "-p", "-a" flags)");
+        logInfo(R"(No steps selected. Exiting. To select steps use "-g", "-s", "-p", "-a", "--dc" flags)");
         return EXIT_SUCCESS;
     }
 
