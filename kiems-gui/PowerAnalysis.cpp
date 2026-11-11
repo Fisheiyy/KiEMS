@@ -138,6 +138,7 @@ std::shared_ptr<const PowerRun> runPowerAnalysis(const BoardData& board, const k
             run->returnProblem = std::move(*returnProblem);
             run->returnResult = std::move(*returnResult);
         }
+        run->senseShift = kiems::dc::applyRemoteSense(run->result, run->returnResult ? &*run->returnResult : nullptr, analysis);
         run->violations = kiems::dc::findViolations(run->problem, run->result, analysis,
                                                     run->returnProblem ? &*run->returnProblem : nullptr,
                                                     run->returnResult ? &*run->returnResult : nullptr);

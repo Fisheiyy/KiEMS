@@ -5,6 +5,7 @@
 //    "sources": [{"footprint": "U2", "pin": "5", "voltage": 5.0}],
 //    "loads":   [{"footprint": "J2", "pin": "1", "current": 0.5}, ...],
 //    "reference_net": "GND",
+//    "sense": {"footprint": "J8", "pin": "1", "voltage": 5.0}, "load_pins": "each",
 //    "temperature": 20, "plating": 0.025, "max_element": 0.5, "load_pads": "equipotential"}
 // Temperatures are in C, lengths in mm, voltages in V and currents in A. "load_pads" is
 // "equipotential" (the default: a soldered lead ties each load's pad together) or "distributed" (the
@@ -13,6 +14,11 @@
 // With a "reference_net", the return is solved too (buildReturnProblem()): each source's own pins on
 // it are held at 0 V and each load's current flows back in through its own pins on it, so a load
 // sees its rail pin's voltage less its ground pins' -- the voltage across the part.
+//
+// "load_pins": "shared" has each part's load pins share the part's total current (the copper
+// decides the split; see dc::Terminal::package) instead of each drawing its own. A "sense" pin is a
+// regulator's remote sense: the sources are moved up or down together until that pin (across its
+// part, with a return) is at the sense voltage -- applyRemoteSense().
 #pragma once
 
 #include <expected>
@@ -54,6 +60,8 @@ struct AnalysisConfig {
     std::string net;
     /// The net the current returns on (usually ground); empty to analyse the rail alone.
     std::string referenceNet;
+    /// Where the regulator senses its output, and the voltage it holds there.
+    std::optional<PinValue> sense;
     std::vector<PinValue> sources;
     std::vector<PinValue> loads;
     Options options;
@@ -80,6 +88,12 @@ struct Violation {
 /// return, a load's minimum is checked against the voltage across it.
 std::vector<Violation> findViolations(const Problem& problem, const Result& result, const AnalysisConfig& config,
                                       const Problem* returnProblem = nullptr, const Result* returnResult = nullptr);
+
+/// Moves the rail's voltages (sources included) by the constant that puts the sense pin at its
+/// voltage -- across its part when `returnResult` is given. The solve is linear and the loads draw
+/// fixed currents, so this is exactly what a regulator regulating there would do. Returns the shift;
+/// nullopt, with a warning added to `rail`, if the sense pin wasn't solved.
+std::optional<double> applyRemoteSense(Result& rail, const Result* returnResult, const AnalysisConfig& config);
 
 /// The average voltage of each part's pins in `result`, by reference designator -- on the return
 /// net, the ground each part sees.

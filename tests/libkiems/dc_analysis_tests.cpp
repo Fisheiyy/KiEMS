@@ -1,6 +1,7 @@
 // Checks the DC power analysis solver (libkiems/kiems/dc_analysis.hpp) against cases with exact
 // answers. Run by CTest, or directly: it prints each check and exits non-zero if any failed.
 #include "kiems/dc_analysis.hpp"
+#include "kiems/dc_board.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -152,6 +153,57 @@ void islands() {
     check(!kiems::dc::solve(noSource).has_value(), "no source is an error");
 }
 
+void sharedPart() {
+    // One part's two pins on a strip: halfway along, and at the far end beyond it. Each drawing its
+    // own 0.5 A, both do; sharing the part's 1 A, the nearer takes it all, the farther being a dead
+    // end behind it.
+    const auto problemWith = [](int package) {
+        kiems::dc::Problem problem;
+        problem.layers.push_back({"F.Cu", kThickness, 0, {rectangle(0, 0, 10, 1)}});
+        problem.terminals.push_back(terminal("source", Kind::Source, 0, {rectangle(0, 0, 0.15, 1)}, 5.0));
+        problem.terminals.push_back(terminal("U1 pin 1", Kind::Load, 0, {rectangle(4.9, 0, 5.1, 1)}, 0.5));
+        problem.terminals.push_back(terminal("U1 pin 2", Kind::Load, 0, {rectangle(9.85, 0, 10, 1)}, 0.5));
+        problem.terminals[1].package = package;
+        problem.terminals[2].package = package;
+        return problem;
+    };
+    const auto each = kiems::dc::solve(problemWith(-1));
+    const auto shared = kiems::dc::solve(problemWith(0));
+    check(each && shared, "shared part solves");
+    if (!each || !shared) return;
+    near(each->terminals[1].current, 0.5, 1e-9, "each pin draws its own, A");
+    // All but what loops through the copper beyond it and back in through the far pin's 10 uOhm
+    // link to the part: link / (2 links + the 4.75 squares between the pins).
+    const double tie = 1e-5, between = (9.85 - 5.1) * kSheet;
+    const double far = tie / (2 * tie + between);
+    near(shared->terminals[2].current, far, 2e-2, "the farther pin takes only the loop's share, A");
+    near(shared->terminals[1].current, 1.0 - far, 1e-4, "the nearer pin takes the rest, A");
+    near(shared->terminals[0].current, 1.0, 1e-6, "the source supplies the part's total, A");
+}
+
+void remoteSense() {
+    // Sensing at the load holds it at 5 V: the source rises by the strip's drop.
+    kiems::dc::Problem problem;
+    problem.layers.push_back({"F.Cu", kThickness, 0, {rectangle(0, 0, 10, 1)}});
+    problem.terminals.push_back(terminal("U1 pin 1", Kind::Source, 0, {rectangle(0, 0, 0.15, 1)}, 5.0));
+    problem.terminals.push_back(terminal("J1 pin 1", Kind::Load, 0, {rectangle(9.85, 0, 10, 1)}, 1.0));
+    auto result = kiems::dc::solve(problem);
+    check(result.has_value(), "remote sense solves");
+    if (!result) return;
+    const double drop = 5.0 - result->terminals[1].voltage;
+    const double power = result->powerLoss;
+    kiems::dc::AnalysisConfig config;
+    config.sense = kiems::dc::PinValue{"J1", "1", 5.0, std::nullopt};
+    const auto shift = kiems::dc::applyRemoteSense(*result, nullptr, config);
+    check(shift.has_value(), "the sense pin is found");
+    near(result->terminals[1].voltage, 5.0, 1e-12, "the sensed load is at 5 V");
+    near(result->terminals[0].voltage, 5.0 + drop, 1e-12, "the source rises by the drop, V");
+    near(result->powerLoss, power, 1e-12, "and the power is unchanged, W");
+    config.sense->footprint = "J9";
+    check(!kiems::dc::applyRemoteSense(*result, nullptr, config) && !result->warnings.empty(),
+          "a sense pin that isn't there is reported");
+}
+
 } // namespace
 
 int main() {
@@ -160,6 +212,8 @@ int main() {
     disc();
     via();
     islands();
+    sharedPart();
+    remoteSense();
     std::printf("%s\n", failures == 0 ? "All DC analysis checks passed." : "Some DC analysis checks FAILED.");
     return failures == 0 ? 0 : 1;
 }

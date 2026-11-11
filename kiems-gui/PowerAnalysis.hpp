@@ -42,6 +42,8 @@ struct PowerRun {
     std::optional<kiems::dc::Problem> returnProblem;
     std::optional<kiems::dc::Result> returnResult;
     std::vector<kiems::dc::Violation> violations;
+    /// How far remote sense moved the sources, when the analysis senses.
+    std::optional<double> senseShift;
     /// What the return couldn't model (a load part with no pin on the reference net).
     std::vector<std::string> notes;
     QString error;

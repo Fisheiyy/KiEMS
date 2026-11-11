@@ -58,6 +58,10 @@ void to_json(nlohmann::json& j, const AnalysisConfig& config) {
                        {"max_element", config.options.maxElementMm},
                        {"load_pads", config.options.equipotentialLoadPads ? "equipotential" : "distributed"}};
     if (!config.referenceNet.empty()) j["reference_net"] = config.referenceNet;
+    if (config.sense) {
+        j["sense"] = {{"footprint", config.sense->footprint}, {"pin", config.sense->pin}, {"voltage", config.sense->value}};
+    }
+    if (config.options.sharedPartLoads) j["load_pins"] = "shared";
     if (config.limits.outerCurrentDensity) j["max_current_density_outer"] = *config.limits.outerCurrentDensity;
     if (config.limits.innerCurrentDensity) j["max_current_density_inner"] = *config.limits.innerCurrentDensity;
     if (config.limits.viaCurrent) j["max_via_current"] = *config.limits.viaCurrent;
@@ -81,6 +85,15 @@ void from_json(const nlohmann::json& j, AnalysisConfig& config) {
     config.net = j.at("net").get<std::string>();
     config.name = j.value("name", config.net);
     config.referenceNet = j.value("reference_net", std::string());
+    if (j.contains("sense") && j["sense"].is_object()) {
+        const nlohmann::json& sense = j["sense"];
+        const nlohmann::json& pin = sense.at("pin");
+        config.sense = PinValue{sense.at("footprint").get<std::string>(), pin.is_string() ? pin.get<std::string>() : pin.dump(),
+                                sense.value("voltage", 0.0), std::nullopt};
+    } else {
+        config.sense.reset();
+    }
+    config.options.sharedPartLoads = j.value("load_pins", std::string("each")) == "shared";
     config.sources = pins("sources", "voltage");
     config.loads = pins("loads", "current");
     config.options.temperatureC = j.value("temperature", defaults.temperatureC);
@@ -181,8 +194,24 @@ std::expected<Problem, std::string> buildProblem(const std::vector<libkicad::Sta
     for (const PinValue& pin : config.sources) {
         if (auto added = addTerminal(pin, Terminal::Kind::Source); !added) return std::unexpected(added.error());
     }
+    std::map<std::string, int> packages;
     for (const PinValue& pin : config.loads) {
         if (auto added = addTerminal(pin, Terminal::Kind::Load); !added) return std::unexpected(added.error());
+        if (config.options.sharedPartLoads) {
+            problem.terminals.back().package = packages.emplace(pin.footprint, static_cast<int>(packages.size())).first->second;
+        }
+    }
+    // The sense pin, drawing nothing, when it isn't already a pin of the analysis.
+    if (config.sense) {
+        const std::string name = config.sense->footprint + " pin " + config.sense->pin;
+        const bool known = std::any_of(problem.terminals.begin(), problem.terminals.end(),
+                                       [&](const Terminal& t) { return t.name == name; });
+        if (!known) {
+            if (auto added = addTerminal({config.sense->footprint, config.sense->pin, 0.0, std::nullopt}, Terminal::Kind::Load);
+                !added) {
+                return std::unexpected("The sense pin: " + added.error());
+            }
+        }
     }
     return problem;
 }
@@ -214,6 +243,7 @@ std::expected<Problem, std::string> buildReturnProblem(const std::vector<libkica
     ret.net = config.referenceNet;
     ret.sources.clear();
     ret.loads.clear();
+    ret.sense.reset(); // the sense pin is on the rail
     std::vector<std::string> sourceParts;
     for (const PinValue& source : config.sources) {
         if (std::find(sourceParts.begin(), sourceParts.end(), source.footprint) == sourceParts.end()) {
@@ -245,6 +275,29 @@ std::expected<Problem, std::string> buildReturnProblem(const std::vector<libkica
         }
     }
     return buildProblem(stackup, geometry, holes, ret);
+}
+
+std::optional<double> applyRemoteSense(Result& rail, const Result* returnResult, const AnalysisConfig& config) {
+    if (!config.sense) return std::nullopt;
+    const std::string name = config.sense->footprint + " pin " + config.sense->pin;
+    const auto terminal = std::find_if(rail.terminals.begin(), rail.terminals.end(),
+                                       [&](const TerminalResult& t) { return t.name == name; });
+    if (terminal == rail.terminals.end() || !terminal->connected) {
+        rail.warnings.push_back("The sense pin " + name + " isn't connected, so the sources stay where they're set.");
+        return std::nullopt;
+    }
+    double ground = 0;
+    if (returnResult) {
+        const auto grounds = partVoltages(*returnResult);
+        if (const auto it = grounds.find(config.sense->footprint); it != grounds.end()) ground = it->second;
+    }
+    const double shift = config.sense->value - (terminal->voltage - ground);
+    // Shifting every voltage leaves every current, and the power, as they were.
+    for (LayerResult& layer : rail.layers) {
+        for (double& v : layer.voltage) v += shift;
+    }
+    for (TerminalResult& t : rail.terminals) t.voltage += shift;
+    return shift;
 }
 
 std::map<std::string, double> partVoltages(const Result& result) {

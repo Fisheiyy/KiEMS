@@ -557,6 +557,20 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     railForm->addRow(tr("Name:"), _name);
     railForm->addRow(tr("Net:"), _net);
     railForm->addRow(tr("Return net:"), _returnNet);
+    _sensePart = new QLineEdit;
+    _sensePart->setPlaceholderText(tr("Part"));
+    _sensePin = new QLineEdit;
+    _sensePin->setPlaceholderText(tr("Pin"));
+    _senseVolts = new QuantityEdit(QuantityEdit::Kind::Voltage);
+    for (QWidget* field : std::initializer_list<QWidget*>{_sensePart, _sensePin, _senseVolts}) {
+        field->setToolTip(tr("Where the regulator senses its output, and the voltage it holds there (across the part, "
+                             "with a return net). The sources move together to hold it. Empty for none."));
+    }
+    auto* senseRow = new QHBoxLayout;
+    senseRow->addWidget(_sensePart, 2);
+    senseRow->addWidget(_sensePin, 1);
+    senseRow->addWidget(_senseVolts, 2);
+    railForm->addRow(tr("Sense:"), senseRow);
     setupLayout->addWidget(rail);
 
     auto* pins = new QGroupBox(tr("Pins"));
@@ -613,6 +627,11 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     solverForm->addRow(tr("Via plating:"), _plating);
     solverForm->addRow(tr("Largest element:"), _maxElement);
     solverForm->addRow(tr("Load pads:"), _loadPads);
+    _loadPins = new QComboBox;
+    _loadPins->addItems({tr("Each draws its own"), tr("A part's pins share")});
+    _loadPins->setToolTip(tr("Whether each load pin draws the current it's given, or a part's load pins share their "
+                             "total, split by the copper as it would be by the part's own internal connections."));
+    solverForm->addRow(tr("Load pins:"), _loadPins);
     setupLayout->addWidget(solver);
 
     auto* limits = new QGroupBox(tr("Limits"));
@@ -661,6 +680,13 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
         add(tr("Source"), PowerCanvas::Role::Source);
         add(tr("Load"), PowerCanvas::Role::Load);
         add(tr("Not in the analysis"), PowerCanvas::Role::None);
+        menu.addSeparator();
+        QAction* sense = menu.addAction(tr("Sense the Regulator's Output Here"), this, [this, footprint, pin] {
+            setPinRole(footprint, pin, PowerCanvas::Role::Sense);
+        });
+        sense->setCheckable(true);
+        sense->setChecked(analysis->sense && analysis->sense->footprint == footprint.toStdString() &&
+                          analysis->sense->pin == pin.toStdString());
         menu.exec(at);
     });
     connect(_layer, &QComboBox::currentIndexChanged, this, [this](int index) {
@@ -743,6 +769,26 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     });
     connect(_maxElement, &QuantityEdit::valueEdited, this, [this](std::optional<double> v) {
         if (v && *v > 0) edit([&](kiems::dc::AnalysisConfig& a) { a.options.maxElementMm = *v / 1000; });
+    });
+    const auto commitSense = [this] {
+        if (_updating) return;
+        const std::string part = _sensePart->text().trimmed().toStdString(), pin = _sensePin->text().trimmed().toStdString();
+        edit([&](kiems::dc::AnalysisConfig& a) {
+            if (part.empty() || pin.empty()) {
+                a.sense.reset();
+                return;
+            }
+            const double volts = _senseVolts->value().value_or(a.sense ? a.sense->value
+                                                               : a.sources.empty() ? kiems::dc::voltageFromNetName(a.net)
+                                                                                   : a.sources.front().value);
+            a.sense = kiems::dc::PinValue{part, pin, volts, std::nullopt};
+        });
+    };
+    connect(_sensePart, &QLineEdit::editingFinished, this, commitSense);
+    connect(_sensePin, &QLineEdit::editingFinished, this, commitSense);
+    connect(_senseVolts, &QuantityEdit::valueEdited, this, commitSense);
+    connect(_loadPins, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (!_updating) edit([&](kiems::dc::AnalysisConfig& a) { a.options.sharedPartLoads = index == 1; });
     });
     connect(_loadPads, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (!_updating) edit([&](kiems::dc::AnalysisConfig& a) { a.options.equipotentialLoadPads = index == 0; });
@@ -832,6 +878,16 @@ void PowerView::refreshPreview() {
 
 void PowerView::setPinRole(const QString& footprint, const QString& pin, PowerCanvas::Role role) {
     const std::string part = footprint.toStdString(), number = pin.toStdString();
+    if (role == PowerCanvas::Role::Sense) {
+        // At the rail's own voltage, unless it was already sensing somewhere.
+        edit([&](kiems::dc::AnalysisConfig& a) {
+            const double volts = a.sense ? a.sense->value
+                                 : a.sources.empty() ? kiems::dc::voltageFromNetName(a.net)
+                                                     : a.sources.front().value;
+            a.sense = kiems::dc::PinValue{part, number, volts, std::nullopt};
+        });
+        return;
+    }
     edit([&](kiems::dc::AnalysisConfig& a) {
         const auto same = [&](const kiems::dc::PinValue& p) { return p.footprint == part && p.pin == number; };
         // A pin keeps its value if it already had this role; a new one takes its list's last
@@ -953,6 +1009,10 @@ void PowerView::refreshSetup() {
         _plating->refreshValue(analysis->options.platingMm * 1000);
         _maxElement->refreshValue(analysis->options.maxElementMm * 1000);
         _loadPads->setCurrentIndex(analysis->options.equipotentialLoadPads ? 0 : 1);
+        _loadPins->setCurrentIndex(analysis->options.sharedPartLoads ? 1 : 0);
+        if (!_sensePart->hasFocus()) _sensePart->setText(analysis->sense ? QString::fromStdString(analysis->sense->footprint) : QString());
+        if (!_sensePin->hasFocus()) _sensePin->setText(analysis->sense ? QString::fromStdString(analysis->sense->pin) : QString());
+        _senseVolts->refreshValue(analysis->sense ? std::optional(analysis->sense->value) : std::nullopt);
         _outerLimit->refreshValue(analysis->limits.outerCurrentDensity);
         _innerLimit->refreshValue(analysis->limits.innerCurrentDensity);
         _viaLimit->refreshValue(analysis->limits.viaCurrent);
@@ -1115,6 +1175,15 @@ void PowerView::updateStatus() {
                            .arg(run->result.unknowns + (run->returnResult ? run->returnResult->unknowns : 0))
                            .arg(run->seconds, 0, 'f', 2)
                            .arg((run->result.powerLoss + (run->returnResult ? run->returnResult->powerLoss : 0)) * 1e3, 0, 'f', 1);
+        if (run->senseShift && run->analysis.sense) {
+            double regulator = 0;
+            for (const auto& terminal : run->result.terminals) {
+                if (terminal.kind == kiems::dc::Terminal::Kind::Source && terminal.connected) regulator = terminal.voltage;
+            }
+            text += tr("; sensing %1 pin %2, the regulator sets %3 V")
+                        .arg(QString::fromStdString(run->analysis.sense->footprint), QString::fromStdString(run->analysis.sense->pin))
+                        .arg(regulator, 0, 'f', 4);
+        }
         if (analysis && !(run->analysis == *analysis)) text = tr("Out of date: the settings changed since this run. ") + text;
         _status->setText(text);
     }

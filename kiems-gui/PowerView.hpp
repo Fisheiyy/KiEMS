@@ -39,7 +39,7 @@ class PowerCanvas : public QWidget {
 
 public:
     enum class Quantity { Voltage, CurrentDensity };
-    enum class Role { None, Source, Load };
+    enum class Role { None, Source, Load, Sense };
 
     /// One pad of the rail, in board millimetres.
     struct PadShape {
@@ -170,6 +170,10 @@ private:
     QLineEdit* _name;
     QComboBox* _net;
     QComboBox* _returnNet;
+    QLineEdit* _sensePart;
+    QLineEdit* _sensePin;
+    QuantityEdit* _senseVolts;
+    QComboBox* _loadPins;
     QTableWidget* _sources;
     QTableWidget* _loads;
     QuantityEdit* _totalCurrent;

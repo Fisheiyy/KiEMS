@@ -680,6 +680,18 @@ int runDCAnalyses(const std::vector<std::string>& names, const std::filesystem::
                 logInfo(line.str());
             }
         }
+        if (const auto shift = dc::applyRemoteSense(*result, returnResult ? &*returnResult : nullptr, analysis)) {
+            std::ostringstream line;
+            line.precision(6);
+            line << "  remote sense at " << analysis.sense->footprint << " pin " << analysis.sense->pin
+                 << ": the sources move by " << *shift * 1e3 << " mV (the pin voltages above are before it)";
+            for (const dc::TerminalResult& terminal : result->terminals) {
+                if (terminal.kind == dc::Terminal::Kind::Source && terminal.connected) {
+                    line << "; " << terminal.name << " sets " << terminal.voltage << " V";
+                }
+            }
+            logInfo(line.str());
+        }
         const std::vector<dc::Violation> violations =
             dc::findViolations(*problem, *result, analysis, returnProblem ? &*returnProblem : nullptr,
                                returnResult ? &*returnResult : nullptr);

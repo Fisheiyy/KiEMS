@@ -1085,6 +1085,16 @@ private slots:
         QCOMPARE(config().sources.size(), std::size_t(2));
         QCOMPARE(config().sources[1].value, 5.0);
         QVERIFY(config().loads.empty());
+        // Sensing at J1: it's held at 5 V across its part, the source rising to make it so.
+        kiems_gui::setPowerAnalysis(document, 0, restored);
+        view.setPinRole("J1", "1", kiems_gui::PowerCanvas::Role::Sense);
+        QVERIFY(config().sense && config().sense->footprint == "J1" && config().sense->value == 5.0);
+        const auto sensed = kiems_gui::runPowerAnalysis(*board, config());
+        QVERIFY2(sensed->ok(), qPrintable(sensed->error));
+        QVERIFY(sensed->senseShift);
+        const double sensedAcross = sensed->result.terminals[1].voltage - kiems::dc::partVoltages(*sensed->returnResult).at("J1");
+        QVERIFY(std::abs(sensedAcross - 5.0) < 1e-9);
+        QVERIFY(std::abs(sensed->result.terminals[0].voltage - (5.0 + 2 * 2.0 * 9.7 * sheet)) < 3e-3 * 2 * 2.0 * 9.7 * sheet);
         kiems_gui::setPowerAnalysis(document, 0, restored);
         if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
             view.grab().save(QDir(snapshots).filePath("power_preview.png")); // the board's copper, before a run

@@ -278,7 +278,13 @@ as `Current` could be read later, through the netlist path that the simulation m
    each analysis again on the loaded board and reports its verdict, pins, busiest vias and maps.
    Before a run the map shows the rail's copper from the board; a click on one of its pads makes
    the pin a source or a load, or takes it out.
-4. Series parts and VRMs, so multi-rail trees work; then the equipotential-package load model;
-   then remote sense.
+4. *(Partly done.)*
+   - **Package load model:** `"load_pins": "shared"` ties a part's load pins together through
+     10 µΩ links to a node inside the part, which draws the part's total current, and reports
+     each pin's share.
+   - **Remote sense:** `"sense"` moves the sources together until the sense pin is at its
+     voltage. The solve is linear, so that's a constant shift. On StickHub, sensing at J8 puts
+     U2 at 5.0707 V.
+   - **Still to do:** series parts and VRMs, so multi-rail trees work.
 5. Later: electro-thermal coupling. AC PDN impedance is a separate problem, closer to the
    existing FDTD path than to this solver.

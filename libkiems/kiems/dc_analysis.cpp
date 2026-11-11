@@ -35,6 +35,9 @@ using Criteria = CGAL::Delaunay_mesh_size_criteria_2<CDT>;
 using Mesher = CGAL::Delaunay_mesher_2<CDT, Criteria>;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+/// The link between a part's pin and the node inside it that draws a shared current: 10 uOhm,
+/// stiff enough that the copper alone decides the split.
+constexpr double kPackageTie = 1e5;
 /// How close to a pad's or ring's outline a node counts as on it, mm.
 constexpr double kOnEdge = 1e-6;
 
@@ -511,7 +514,7 @@ std::expected<Result, std::string> solve(const Problem& problem) {
         if (terminal.layer < 0 || terminal.layer >= static_cast<int>(layerCount)) continue;
         terminalNodes[t] = nodesIn(static_cast<std::size_t>(terminal.layer), terminal.pad);
         const std::vector<int>& nodes = terminalNodes[t];
-        if (terminal.kind == Terminal::Kind::Source || options.equipotentialLoadPads) {
+        if (terminal.kind == Terminal::Kind::Source || options.equipotentialLoadPads || terminal.package >= 0) {
             for (int node : nodes) merged.unite(nodes.front(), node);
         }
         if (!nodes.empty()) terminalNode[t] = nodes.front();
@@ -534,7 +537,15 @@ std::expected<Result, std::string> solve(const Problem& problem) {
         const auto [it, added] = rootDof.emplace(root, static_cast<int>(rootDof.size()));
         dof[static_cast<std::size_t>(i)] = it->second;
     }
-    const int dofCount = static_cast<int>(rootDof.size());
+    // A node inside each part whose pins share its current.
+    int partNodes = static_cast<int>(rootDof.size());
+    std::map<int, int> packageDof;
+    for (std::size_t t = 0; t < problem.terminals.size(); ++t) {
+        const Terminal& terminal = problem.terminals[t];
+        if (terminal.kind != Terminal::Kind::Load || terminal.package < 0 || terminalNode[t] < 0) continue;
+        if (!packageDof.contains(terminal.package)) packageDof[terminal.package] = partNodes++;
+    }
+    const int dofCount = partNodes;
 
     // --- Assemble: each triangle's linear-element conductances, and each barrel span's resistor.
     std::vector<std::tuple<int, int, double>> entries;
@@ -590,6 +601,14 @@ std::expected<Result, std::string> solve(const Problem& problem) {
             }
         }
     }
+    // Each shared pin's link to its part's node.
+    const auto packaged = [&](std::size_t t) {
+        return problem.terminals[t].kind == Terminal::Kind::Load && problem.terminals[t].package >= 0 && terminalNode[t] >= 0;
+    };
+    for (std::size_t t = 0; t < problem.terminals.size(); ++t) {
+        if (!packaged(t)) continue;
+        couple(dof[static_cast<std::size_t>(terminalNode[t])], packageDof.at(problem.terminals[t].package), kPackageTie);
+    }
     Csr full = Csr::build(dofCount, entries);
 
     // --- Sources fix their unknowns; loads draw current from theirs.
@@ -613,6 +632,8 @@ std::expected<Result, std::string> solve(const Problem& problem) {
             } else {
                 fixed[d] = terminal.value;
             }
+        } else if (terminal.package >= 0) {
+            drawn[static_cast<std::size_t>(packageDof.at(terminal.package))] += terminal.value;
         } else {
             const auto& nodes = terminalNodes[t];
             for (int node : nodes) {
@@ -701,6 +722,10 @@ std::expected<Result, std::string> solve(const Problem& problem) {
         for (int node : terminalNodes[t]) sum += v[static_cast<std::size_t>(dof[static_cast<std::size_t>(node)])];
         out.voltage = sum / static_cast<double>(terminalNodes[t].size());
         out.current = problem.terminals[t].kind == Terminal::Kind::Source ? flow[d] : problem.terminals[t].value;
+        // A shared pin's share: what flows through its link into the part.
+        if (packaged(t)) {
+            out.current = kPackageTie * (v[d] - v[static_cast<std::size_t>(packageDof.at(problem.terminals[t].package))]);
+        }
     }
     // Sources sharing a node share its current equally.
     {

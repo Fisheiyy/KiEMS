@@ -61,6 +61,10 @@ struct Terminal {
     Cu::PolygonSet pad;
     /// Volts for a source; amps drawn for a load.
     double value = 0;
+    /// Loads with the same package (>= 0) are one part's pins: their total current is drawn from
+    /// a node inside the part, tied to each pin's pad, so the copper decides how it splits between
+    /// them. Each such pin's pad is one node. -1 for a pin that draws its own current.
+    int package = -1;
 };
 
 struct Options {
@@ -76,6 +80,9 @@ struct Options {
     /// through the pad to the next load meets no resistance across it -- or its current is drawn
     /// evenly from the pad's copper, which then conducts like any other.
     bool equipotentialLoadPads = true;
+    /// Whether a part's load pins share its current (dc::Terminal::package), letting the copper
+    /// decide the split, rather than each drawing the current it's given.
+    bool sharedPartLoads = false;
 
     bool operator==(const Options&) const = default;
 };
@@ -110,7 +117,7 @@ struct TerminalResult {
     std::string name;
     Terminal::Kind kind = Terminal::Kind::Load;
     double voltage = 0; // volts; NaN when it isn't connected to a source
-    double current = 0; // amps out of the net at a load, into it at a source
+    double current = 0; // amps out of the net at a load (its share, for a package's pin), into it at a source
     bool connected = false;
 };
 
