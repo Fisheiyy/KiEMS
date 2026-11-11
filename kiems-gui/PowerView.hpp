@@ -40,7 +40,8 @@ public:
     explicit PowerCanvas(QWidget* parent = nullptr);
 
     void setRun(std::shared_ptr<const PowerRun> run, bool refit);
-    void setLayer(int layer);
+    /// Shows `layer` of the rail, or of its return.
+    void setLayer(int layer, bool onReturn = false);
     void setQuantity(Quantity quantity);
     void setLogScale(bool on);
     void fit();
@@ -64,9 +65,12 @@ private:
     void updateRange();
     void renderMap();
     QRectF mapArea() const;
+    const kiems::dc::Result& result() const;
+    const kiems::dc::Problem& problem() const;
 
     std::shared_ptr<const PowerRun> _run;
     int _layer = 0;
+    bool _onReturn = false;
     Quantity _quantity = Quantity::Voltage;
     bool _logScale = true;
     double _low = 0, _high = 1;
@@ -129,6 +133,7 @@ private:
 
     QLineEdit* _name;
     QComboBox* _net;
+    QComboBox* _returnNet;
     QTableWidget* _sources;
     QTableWidget* _loads;
     QuantityEdit* _totalCurrent;

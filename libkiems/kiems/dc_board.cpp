@@ -57,6 +57,7 @@ void to_json(nlohmann::json& j, const AnalysisConfig& config) {
                        {"plating", config.options.platingMm},
                        {"max_element", config.options.maxElementMm},
                        {"load_pads", config.options.equipotentialLoadPads ? "equipotential" : "distributed"}};
+    if (!config.referenceNet.empty()) j["reference_net"] = config.referenceNet;
     if (config.limits.outerCurrentDensity) j["max_current_density_outer"] = *config.limits.outerCurrentDensity;
     if (config.limits.innerCurrentDensity) j["max_current_density_inner"] = *config.limits.innerCurrentDensity;
     if (config.limits.viaCurrent) j["max_via_current"] = *config.limits.viaCurrent;
@@ -79,6 +80,7 @@ void from_json(const nlohmann::json& j, AnalysisConfig& config) {
     const Options defaults;
     config.net = j.at("net").get<std::string>();
     config.name = j.value("name", config.net);
+    config.referenceNet = j.value("reference_net", std::string());
     config.sources = pins("sources", "voltage");
     config.loads = pins("loads", "current");
     config.options.temperatureC = j.value("temperature", defaults.temperatureC);
@@ -185,6 +187,80 @@ std::expected<Problem, std::string> buildProblem(const std::vector<libkicad::Sta
     return problem;
 }
 
+std::expected<Problem, std::string> buildReturnProblem(const libkicad::Board& board, const AnalysisConfig& config,
+                                                       std::vector<std::string>* warnings) {
+    auto stackup = board.stackup();
+    if (!stackup) return std::unexpected("Couldn't read the board's stackup: " + stackup.error());
+    auto geometry = board.boardGeometry();
+    if (!geometry) return std::unexpected("Couldn't read the board's copper: " + geometry.error());
+    auto holes = board.throughHoles();
+    if (!holes) return std::unexpected("Couldn't read the board's plated holes: " + holes.error());
+    return buildReturnProblem(*stackup, *geometry, *holes, config, warnings);
+}
+
+std::expected<Problem, std::string> buildReturnProblem(const std::vector<libkicad::StackupLayer>& stackup,
+                                                       const libkicad::BoardGeometry& geometry,
+                                                       const std::vector<libkicad::ThroughHole>& holes,
+                                                       const AnalysisConfig& config, std::vector<std::string>* warnings) {
+    if (config.referenceNet.empty()) return std::unexpected("The analysis has no reference net.");
+    // Each part's pins on the reference net.
+    std::map<std::string, std::vector<std::string>> pinsOf;
+    for (const libkicad::CopperPolygon& polygon : geometry.copper) {
+        if (polygon.netName != config.referenceNet || polygon.footprintRef.empty()) continue;
+        auto& pins = pinsOf[polygon.footprintRef];
+        if (std::find(pins.begin(), pins.end(), polygon.padNumber) == pins.end()) pins.push_back(polygon.padNumber);
+    }
+    AnalysisConfig ret = config;
+    ret.net = config.referenceNet;
+    ret.sources.clear();
+    ret.loads.clear();
+    std::vector<std::string> sourceParts;
+    for (const PinValue& source : config.sources) {
+        if (std::find(sourceParts.begin(), sourceParts.end(), source.footprint) == sourceParts.end()) {
+            sourceParts.push_back(source.footprint);
+        }
+    }
+    for (const std::string& part : sourceParts) {
+        const auto found = pinsOf.find(part);
+        if (found == pinsOf.end()) {
+            return std::unexpected(part + " has no pin on " + config.referenceNet + " for its current to return to.");
+        }
+        for (const std::string& pin : found->second) ret.sources.push_back({part, pin, 0.0, std::nullopt});
+    }
+    // Each load part's total, back in through its pins (a negative draw).
+    std::vector<std::pair<std::string, double>> loadParts;
+    for (const PinValue& load : config.loads) {
+        auto it = std::find_if(loadParts.begin(), loadParts.end(), [&](const auto& p) { return p.first == load.footprint; });
+        if (it == loadParts.end()) loadParts.emplace_back(load.footprint, load.value);
+        else it->second += load.value;
+    }
+    for (const auto& [part, current] : loadParts) {
+        const auto found = pinsOf.find(part);
+        if (found == pinsOf.end()) {
+            if (warnings) warnings->push_back(part + " has no pin on " + config.referenceNet + ", so its return current isn't modelled.");
+            continue;
+        }
+        for (const std::string& pin : found->second) {
+            ret.loads.push_back({part, pin, -current / static_cast<double>(found->second.size()), std::nullopt});
+        }
+    }
+    return buildProblem(stackup, geometry, holes, ret);
+}
+
+std::map<std::string, double> partVoltages(const Result& result) {
+    std::map<std::string, std::pair<double, int>> sums;
+    for (const TerminalResult& terminal : result.terminals) {
+        if (!terminal.connected) continue;
+        const std::string part = terminal.name.substr(0, terminal.name.find(" pin "));
+        auto& [sum, count] = sums[part];
+        sum += terminal.voltage;
+        ++count;
+    }
+    std::map<std::string, double> voltages;
+    for (const auto& [part, sum] : sums) voltages[part] = sum.first / sum.second;
+    return voltages;
+}
+
 double voltageFromNetName(const std::string& net) {
     const std::string leaf = net.substr(net.find_last_of('/') + 1);
     std::smatch match;
@@ -222,8 +298,10 @@ AnalysisConfig automaticAnalysis(const std::vector<libkicad::PadPosition>& pads,
     return config;
 }
 
-std::vector<Violation> findViolations(const Problem& problem, const Result& result, const AnalysisConfig& config) {
+std::vector<Violation> findViolations(const Problem& problem, const Result& result, const AnalysisConfig& config,
+                                      const Problem* returnProblem, const Result* returnResult) {
     std::vector<Violation> violations;
+    const std::map<std::string, double> grounds = returnResult ? partVoltages(*returnResult) : std::map<std::string, double>();
     const auto format = [](double value, int precision) {
         std::ostringstream text;
         text.precision(precision);
@@ -236,7 +314,10 @@ std::vector<Violation> findViolations(const Problem& problem, const Result& resu
         if (terminal.kind != Terminal::Kind::Load || !terminal.connected) continue;
         for (const PinValue& load : config.loads) {
             if (load.footprint + " pin " + load.pin != terminal.name || !load.minimumVoltage) continue;
-            if (terminal.voltage >= *load.minimumVoltage * (1 - 1e-9)) continue; // not for rounding
+            // Across the part, when its return is solved too.
+            const auto ground = grounds.find(load.footprint);
+            const double across = terminal.voltage - (ground != grounds.end() ? ground->second : 0.0);
+            if (across >= *load.minimumVoltage * (1 - 1e-9)) continue; // not for rounding
             Cu::BoundingBox<double> box;
             for (const Cu::Polygon& loop : problem.terminals[t].pad) {
                 for (const Cu::Position& p : loop) {
@@ -247,9 +328,9 @@ std::vector<Violation> findViolations(const Problem& problem, const Result& resu
                 }
             }
             violations.push_back({Violation::Kind::Voltage,
-                                  terminal.name + " is at " + format(terminal.voltage, 5) + " V, below its " +
-                                      format(*load.minimumVoltage, 5) + " V minimum",
-                                  terminal.voltage, *load.minimumVoltage, problem.terminals[t].layer,
+                                  terminal.name + (ground != grounds.end() ? " sees " : " is at ") + format(across, 5) +
+                                      " V, below its " + format(*load.minimumVoltage, 5) + " V minimum",
+                                  across, *load.minimumVoltage, problem.terminals[t].layer,
                                   (box.xMin + box.xMax) / 2, (box.yMin + box.yMax) / 2});
         }
     }
@@ -288,6 +369,16 @@ std::vector<Violation> findViolations(const Problem& problem, const Result& resu
                                       format(*config.limits.viaCurrent, 4) + " A limit",
                                   barrel.current, *config.limits.viaCurrent, -1, problem.barrels[b].x,
                                   problem.barrels[b].y});
+        }
+    }
+    // The return's copper and vias, against the same limits.
+    if (returnProblem && returnResult) {
+        AnalysisConfig limitsOnly = config;
+        limitsOnly.loads.clear();
+        for (Violation violation : findViolations(*returnProblem, *returnResult, limitsOnly)) {
+            violation.message = config.referenceNet + ": " + violation.message;
+            violation.onReturn = true;
+            violations.push_back(std::move(violation));
         }
     }
     return violations;
@@ -377,7 +468,8 @@ std::string fileStem(const std::string& name) {
 
 std::expected<void, std::string> writeResult(const Result& result, const AnalysisConfig& config,
                                              const std::vector<Violation>& violations,
-                                             const std::filesystem::path& directory, bool plots) {
+                                             const std::filesystem::path& directory, bool plots,
+                                             const Result* returnResult) {
     std::error_code error;
     std::filesystem::create_directories(directory, error);
     if (error) return std::unexpected("Couldn't create " + pathToUtf8(directory) + ": " + error.message());
@@ -392,7 +484,22 @@ std::expected<void, std::string> writeResult(const Result& result, const Analysi
                         {"value", v.value},
                         {"limit", v.limit},
                         {"x", v.x},
-                        {"y", v.y}});
+                        {"y", v.y},
+                        {"on_return", v.onReturn}});
+    }
+    if (returnResult) {
+        json["return"] = *returnResult;
+        const std::map<std::string, double> grounds = partVoltages(*returnResult);
+        auto& across = json["loads_across"] = nlohmann::json::array();
+        for (const TerminalResult& terminal : result.terminals) {
+            if (terminal.kind != Terminal::Kind::Load || !terminal.connected) continue;
+            const auto ground = grounds.find(terminal.name.substr(0, terminal.name.find(" pin ")));
+            if (ground == grounds.end()) continue;
+            across.push_back({{"name", terminal.name},
+                              {"rail", terminal.voltage},
+                              {"ground", ground->second},
+                              {"across", terminal.voltage - ground->second}});
+        }
     }
     std::ofstream file(directory / "result.json");
     if (!file) return std::unexpected("Couldn't write " + pathToUtf8(directory / "result.json"));
@@ -403,6 +510,16 @@ std::expected<void, std::string> writeResult(const Result& result, const Analysi
         if (layer.triangles.empty()) continue;
         plotLayer(layer, config, false, directory / (fileStem(layer.name) + "_voltage.png"));
         plotLayer(layer, config, true, directory / (fileStem(layer.name) + "_current_density.png"));
+    }
+    if (returnResult) {
+        AnalysisConfig named = config;
+        named.name = config.name + " return (" + config.referenceNet + ")";
+        for (const LayerResult& layer : returnResult->layers) {
+            if (layer.triangles.empty()) continue;
+            const std::string stem = fileStem(config.referenceNet) + "_" + fileStem(layer.name);
+            plotLayer(layer, named, false, directory / (stem + "_voltage.png"));
+            plotLayer(layer, named, true, directory / (stem + "_current_density.png"));
+        }
     }
     return {};
 }

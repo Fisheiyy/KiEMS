@@ -79,7 +79,21 @@ void removePowerAnalysis(Document& document, int index) {
 }
 
 kiems::dc::AnalysisConfig newPowerAnalysis(const BoardData& board, const QString& net, double totalCurrent) {
-    return kiems::dc::automaticAnalysis(board.pads, net.toStdString(), 0, totalCurrent);
+    kiems::dc::AnalysisConfig analysis = kiems::dc::automaticAnalysis(board.pads, net.toStdString(), 0, totalCurrent);
+    const QString ground = groundNetOf(board);
+    if (ground != net) analysis.referenceNet = ground.toStdString();
+    return analysis;
+}
+
+QString groundNetOf(const BoardData& board) {
+    for (const QString& candidate : {QStringLiteral("GND"), QStringLiteral("GNDD"), QStringLiteral("DGND")}) {
+        if (board.nets.contains(candidate)) return candidate;
+    }
+    for (const QString& net : board.nets) {
+        const QString leaf = net.section('/', -1).toUpper();
+        if (leaf == "GND" || leaf == "GROUND" || leaf == "VSS") return net;
+    }
+    return {};
 }
 
 QStringList powerNetCandidates(const BoardData& board) {
@@ -108,7 +122,25 @@ std::shared_ptr<const PowerRun> runPowerAnalysis(const BoardData& board, const k
             return run;
         }
         run->result = std::move(*result);
-        run->violations = kiems::dc::findViolations(run->problem, run->result, analysis);
+        // The return, solved on its own net: the two share no copper.
+        if (!analysis.referenceNet.empty()) {
+            auto returnProblem =
+                kiems::dc::buildReturnProblem(board.stackup, board.geometry, board.throughHoles, analysis, &run->notes);
+            if (!returnProblem) {
+                run->error = QString::fromStdString(returnProblem.error());
+                return run;
+            }
+            auto returnResult = kiems::dc::solve(*returnProblem);
+            if (!returnResult) {
+                run->error = QString::fromStdString(analysis.referenceNet + ": " + returnResult.error());
+                return run;
+            }
+            run->returnProblem = std::move(*returnProblem);
+            run->returnResult = std::move(*returnResult);
+        }
+        run->violations = kiems::dc::findViolations(run->problem, run->result, analysis,
+                                                    run->returnProblem ? &*run->returnProblem : nullptr,
+                                                    run->returnResult ? &*run->returnResult : nullptr);
     } catch (const std::exception& exception) {
         run->error = QString::fromStdString(exception.what());
     }

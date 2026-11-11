@@ -1007,12 +1007,17 @@ private slots:
             return libkicad::PolygonLoop{false, {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}};
         };
         board->geometry.outline = {rect(-1, -1, 11, 2)};
+        // And its return: a matching GND strip from J1's ground pin back to U1's.
         board->geometry.copper = {{"+5V", "F.Cu", false, "", "", rect(0, 0, 10, 1)},
                                   {"+5V", "F.Cu", false, "U1", "1", rect(0, 0, 0.15, 1)},
-                                  {"+5V", "F.Cu", false, "J1", "1", rect(9.85, 0, 10, 1)}};
+                                  {"+5V", "F.Cu", false, "J1", "1", rect(9.85, 0, 10, 1)},
+                                  {"GND", "F.Cu", false, "", "", rect(0, 2, 10, 3)},
+                                  {"GND", "F.Cu", false, "U1", "2", rect(0, 2, 0.15, 3)},
+                                  {"GND", "F.Cu", false, "J1", "2", rect(9.85, 2, 10, 3)}};
         board->pads = {{"U1", "1", "+5V", "power_out", 0.075, 0.5, 0, "F.Cu", 0.15, 1},
                        {"J1", "1", "+5V", "power_in", 9.925, 0.5, 0, "F.Cu", 0.15, 1},
-                       {"U1", "2", "GND", "power_in", 0, 2, 0, "F.Cu", 0.5, 0.5}};
+                       {"U1", "2", "GND", "power_in", 0.075, 2.5, 0, "F.Cu", 0.15, 1},
+                       {"J1", "2", "GND", "passive", 9.925, 2.5, 0, "F.Cu", 0.15, 1}};
         QCOMPARE(kiems_gui::powerNetCandidates(*board).first(), QString("GND"));
         QVERIFY(kiems_gui::powerNetCandidates(*board).indexOf("SIG") > kiems_gui::powerNetCandidates(*board).indexOf("+5V"));
 
@@ -1023,6 +1028,7 @@ private slots:
         QCOMPARE(analysis.sources[0].value, 5.0); // from the net's name
         QCOMPARE(analysis.loads.size(), std::size_t(1));
         QCOMPARE(analysis.loads[0].value, 2.0);
+        QCOMPARE(analysis.referenceNet, std::string("GND")); // returning on the board's ground
         QCOMPARE(kiems_gui::addPowerAnalysis(document, analysis), 0);
         QCOMPARE(kiems_gui::addPowerAnalysis(document, analysis), 1);
         QCOMPARE(kiems_gui::powerAnalysis(document, 1)->name, std::string("+5V 2"));
@@ -1036,6 +1042,11 @@ private slots:
         QVERIFY2(run->ok(), qPrintable(run->error));
         QVERIFY(std::abs((5.0 - run->result.terminals[1].voltage) - 2.0 * 9.7 * sheet) < 2e-3 * 2.0 * 9.7 * sheet);
         QVERIFY(run->violations.empty());
+        // The return drops as much again: J1 sees twice the rail's drop across it.
+        QVERIFY(run->returnResult);
+        const double across = run->result.terminals[1].voltage - kiems::dc::partVoltages(*run->returnResult).at("J1");
+        QVERIFY2(std::abs((5.0 - across) - 2 * 2.0 * 9.7 * sheet) < 3e-3 * 2 * 2.0 * 9.7 * sheet,
+                 qPrintable(QString::number(5.0 - across)));
 
         // Limits it breaks: the current density, and the load's minimum voltage.
         analysis = *kiems_gui::powerAnalysis(document, 0);
@@ -1043,9 +1054,11 @@ private slots:
         analysis.loads[0].minimumVoltage = 4.999;
         kiems_gui::setPowerAnalysis(document, 0, analysis);
         const auto limited = kiems_gui::runPowerAnalysis(*board, *kiems_gui::powerAnalysis(document, 0));
-        QCOMPARE(limited->violations.size(), std::size_t(2));
+        // The voltage across J1, the rail's density and the return's.
+        QCOMPARE(limited->violations.size(), std::size_t(3));
         QVERIFY(limited->violations[0].kind == kiems::dc::Violation::Kind::Voltage);
         QVERIFY(limited->violations[1].kind == kiems::dc::Violation::Kind::CurrentDensity);
+        QVERIFY(limited->violations[2].onReturn);
         QCOMPARE(document.documentValue("/dc_analyses")[0]["max_current_density_outer"].get<double>(), 10.0);
 
         // The page runs it in the background and lists what it found.
@@ -1060,8 +1073,8 @@ private slots:
         QVERIFY(finished.wait(20000));
         QVERIFY(finished.first().at(1).toBool());
         QVERIFY(view.currentRun() && view.currentRun()->ok());
-        QCOMPARE(view.findChild<QTreeWidget*>("pins")->topLevelItemCount(), 2);
-        QCOMPARE(view.findChild<QListWidget*>("problems")->count(), 2); // the two limits broken
+        QCOMPARE(view.findChild<QTreeWidget*>("pins")->topLevelItemCount(), 4); // with the return's two
+        QCOMPARE(view.findChild<QListWidget*>("problems")->count(), 3); // the three limits broken
         if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
             view.setAttribute(Qt::WA_DontShowOnScreen);
             view.show();

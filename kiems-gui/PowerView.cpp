@@ -114,17 +114,28 @@ PowerCanvas::PowerCanvas(QWidget* parent) : QWidget(parent) {
 
 void PowerCanvas::setRun(std::shared_ptr<const PowerRun> run, bool refit) {
     _run = std::move(run);
-    if (_run && _layer >= static_cast<int>(_run->result.layers.size())) _layer = 0;
+    if (_run && !_run->returnResult) _onReturn = false;
+    if (_run && _layer >= static_cast<int>(result().layers.size())) _layer = 0;
     updateRange();
     if (refit) fit();
     _mapValid = false;
     update();
 }
 
-void PowerCanvas::setLayer(int layer) {
+void PowerCanvas::setLayer(int layer, bool onReturn) {
     _layer = layer;
+    _onReturn = onReturn && _run && _run->returnResult;
+    updateRange();
     _mapValid = false;
     update();
+}
+
+const kiems::dc::Result& PowerCanvas::result() const {
+    return _onReturn && _run->returnResult ? *_run->returnResult : _run->result;
+}
+
+const kiems::dc::Problem& PowerCanvas::problem() const {
+    return _onReturn && _run->returnProblem ? *_run->returnProblem : _run->problem;
 }
 
 void PowerCanvas::setQuantity(Quantity quantity) {
@@ -152,6 +163,7 @@ QRectF PowerCanvas::mapArea() const {
 void PowerCanvas::fit() {
     if (!_run || !_run->ok()) return;
     double xMin = std::numeric_limits<double>::infinity(), xMax = -xMin, yMin = xMin, yMax = -xMin;
+    // The rail's extent, so switching between it and its return keeps the view.
     for (const auto& layer : _run->result.layers) {
         for (const Cu::Position& p : layer.nodes) {
             xMin = std::min(xMin, p.x());
@@ -180,7 +192,7 @@ void PowerCanvas::updateRange() {
     _low = std::numeric_limits<double>::infinity();
     _high = -_low;
     if (!_run || !_run->ok()) return;
-    for (const auto& layer : _run->result.layers) {
+    for (const auto& layer : result().layers) {
         if (_quantity == Quantity::Voltage) {
             for (double v : layer.voltage) {
                 if (std::isnan(v)) continue;
@@ -196,7 +208,7 @@ void PowerCanvas::updateRange() {
 }
 
 double PowerCanvas::valueOf(std::size_t triangle) const {
-    const auto& layer = _run->result.layers[static_cast<std::size_t>(_layer)];
+    const auto& layer = result().layers[static_cast<std::size_t>(_layer)];
     if (_quantity == Quantity::CurrentDensity) {
         return std::hypot(layer.currentDensity[triangle][0], layer.currentDensity[triangle][1]);
     }
@@ -222,10 +234,10 @@ void PowerCanvas::renderMap() {
     _map.setDevicePixelRatio(ratio);
     _map.fill(QColor(28, 28, 31));
     _mapValid = true;
-    if (!_run || !_run->ok() || _layer >= static_cast<int>(_run->result.layers.size())) return;
+    if (!_run || !_run->ok() || _layer >= static_cast<int>(result().layers.size())) return;
     QPainter painter(&_map);
     painter.setClipRect(mapArea());
-    const auto& layer = _run->result.layers[static_cast<std::size_t>(_layer)];
+    const auto& layer = result().layers[static_cast<std::size_t>(_layer)];
     for (std::size_t e = 0; e < layer.triangles.size(); ++e) {
         const auto& t = layer.triangles[e];
         const QPointF points[3] = {toScreen(layer.nodes[static_cast<std::size_t>(t[0])].x(), layer.nodes[static_cast<std::size_t>(t[0])].y()),
@@ -254,17 +266,17 @@ void PowerCanvas::paintEvent(QPaintEvent*) {
     painter.setClipRect(mapArea());
     // Vias, sized by their current; then the pins: sources green, loads orange.
     double most = 0;
-    for (const auto& barrel : _run->result.barrels) most = std::max(most, barrel.current);
-    for (std::size_t b = 0; b < _run->result.barrels.size(); ++b) {
-        const auto& barrel = _run->result.barrels[b];
+    for (const auto& barrel : result().barrels) most = std::max(most, barrel.current);
+    for (std::size_t b = 0; b < result().barrels.size(); ++b) {
+        const auto& barrel = result().barrels[b];
         if (!barrel.connected) continue;
-        const QPointF at = toScreen(_run->problem.barrels[b].x, _run->problem.barrels[b].y);
+        const QPointF at = toScreen(problem().barrels[b].x, problem().barrels[b].y);
         const double radius = 2.5 + (most > 0 ? 6 * std::sqrt(barrel.current / most) : 0);
         painter.setPen(QPen(QColor(255, 255, 255, 200), 1));
         painter.setBrush(barrel.current > 0.01 * most ? QColor(214, 170, 76, 220) : Qt::NoBrush);
         painter.drawEllipse(at, radius, radius);
     }
-    for (const auto& terminal : _run->problem.terminals) {
+    for (const auto& terminal : problem().terminals) {
         if (terminal.layer != _layer) continue;
         const QPointF at = toScreen(padCentre(terminal).x(), padCentre(terminal).y());
         const bool source = terminal.kind == kiems::dc::Terminal::Kind::Source;
@@ -336,10 +348,10 @@ void PowerCanvas::mouseMoveEvent(QMouseEvent* event) {
         update();
         return;
     }
-    if (!_run || !_run->ok() || _layer >= static_cast<int>(_run->result.layers.size())) return;
+    if (!_run || !_run->ok() || _layer >= static_cast<int>(result().layers.size())) return;
     // What's under the cursor.
     const QPointF p = toBoard(event->position());
-    const auto& layer = _run->result.layers[static_cast<std::size_t>(_layer)];
+    const auto& layer = result().layers[static_cast<std::size_t>(_layer)];
     for (std::size_t e = 0; e < layer.triangles.size(); ++e) {
         const auto& t = layer.triangles[e];
         const Cu::Position& a = layer.nodes[static_cast<std::size_t>(t[0])];
@@ -413,7 +425,8 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _resultTabs = new QTabWidget;
     _pins = new QTreeWidget;
     _pins->setObjectName("pins");
-    _pins->setHeaderLabels({tr("Pin"), tr("Role"), tr("Voltage"), tr("From the source"), tr("Current")});
+    _pins->setHeaderLabels({tr("Pin"), tr("Role"), tr("Voltage"), tr("From the source"), tr("Ground"), tr("Across"),
+                            tr("Current")});
     _pins->setRootIsDecorated(false);
     _vias = new QTreeWidget;
     _vias->setObjectName("vias");
@@ -440,8 +453,14 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _net->setEditable(true);
     _net->setInsertPolicy(QComboBox::NoInsert);
     _net->setToolTip(tr("The net whose copper carries the rail's current."));
+    _returnNet = new QComboBox;
+    _returnNet->setEditable(true);
+    _returnNet->setInsertPolicy(QComboBox::NoInsert);
+    _returnNet->setToolTip(tr("The net the current returns on, solved with the rail so each load's voltage is the "
+                              "voltage across it. Empty to analyse the rail alone."));
     railForm->addRow(tr("Name:"), _name);
     railForm->addRow(tr("Net:"), _net);
+    railForm->addRow(tr("Return net:"), _returnNet);
     setupLayout->addWidget(rail);
 
     auto* pins = new QGroupBox(tr("Pins"));
@@ -526,7 +545,10 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     // --- Wiring
     connect(_runButton, &QPushButton::clicked, this, &PowerView::run);
     connect(_layer, &QComboBox::currentIndexChanged, this, [this](int index) {
-        if (!_updating && index >= 0) _canvas->setLayer(index);
+        if (_updating || index < 0) return;
+        const auto run = currentRun();
+        const int railLayers = run && run->ok() ? static_cast<int>(run->result.layers.size()) : 0;
+        _canvas->setLayer(index < railLayers ? index : index - railLayers, index >= railLayers);
     });
     connect(_quantity, &QComboBox::currentIndexChanged, this, [this](int index) {
         _canvas->setQuantity(index == 1 ? PowerCanvas::Quantity::CurrentDensity : PowerCanvas::Quantity::Voltage);
@@ -566,6 +588,13 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     };
     connect(_net, &QComboBox::activated, this, commitNet);
     connect(_net->lineEdit(), &QLineEdit::editingFinished, this, commitNet);
+    const auto commitReturn = [this] {
+        if (_updating) return;
+        const std::string net = _returnNet->currentText().trimmed().toStdString();
+        edit([&](kiems::dc::AnalysisConfig& a) { a.referenceNet = net; });
+    };
+    connect(_returnNet, &QComboBox::activated, this, commitReturn);
+    connect(_returnNet->lineEdit(), &QLineEdit::editingFinished, this, commitReturn);
     connect(_sources, &QTableWidget::cellChanged, this, [this] { if (!_updating) commitTables(); });
     connect(_loads, &QTableWidget::cellChanged, this, [this] { if (!_updating) commitTables(); });
     connect(addSource, &QPushButton::clicked, this, [this] {
@@ -620,9 +649,16 @@ void PowerView::setBoard(std::shared_ptr<const BoardData> board) {
     _board = std::move(board);
     _updating = true;
     const QString text = _net->currentText();
+    const QString returnText = _returnNet->currentText();
     _net->clear();
-    if (_board) _net->addItems(powerNetCandidates(*_board));
+    _returnNet->clear();
+    if (_board) {
+        _net->addItems(powerNetCandidates(*_board));
+        _returnNet->addItem(QString());
+        _returnNet->addItems(powerNetCandidates(*_board));
+    }
     _net->setCurrentText(text);
+    _returnNet->setCurrentText(returnText);
     _updating = false;
     updateStatus();
 }
@@ -701,6 +737,7 @@ void PowerView::refreshSetup() {
     if (analysis) {
         if (!_name->hasFocus()) _name->setText(QString::fromStdString(analysis->name));
         if (!_net->lineEdit()->hasFocus()) _net->setCurrentText(QString::fromStdString(analysis->net));
+        if (!_returnNet->lineEdit()->hasFocus()) _returnNet->setCurrentText(QString::fromStdString(analysis->referenceNet));
         // Not while a cell is being typed into.
         const QWidget* focus = QApplication::focusWidget();
         const auto editing = [focus](QTableWidget* table) { return focus && (focus == table || table->isAncestorOf(focus)); };
@@ -742,10 +779,15 @@ void PowerView::refreshResults() {
         _layer->clear();
         if (run && run->ok()) {
             for (const auto& layer : run->result.layers) _layer->addItem(QString::fromStdString(layer.name));
+            if (run->returnResult) {
+                for (const auto& layer : run->returnResult->layers) {
+                    _layer->addItem(QString::fromStdString(run->analysis.referenceNet + ": " + layer.name));
+                }
+            }
         }
         _layer->setCurrentIndex(_layer->count() > 0 ? 0 : -1);
     }
-    _canvas->setLayer(std::max(0, _layer->currentIndex()));
+    _canvas->setLayer(0, false);
     _pins->clear();
     _vias->clear();
     _problems->clear();
@@ -764,17 +806,36 @@ void PowerView::refreshResults() {
         }
     }
     if (sources > 0) sourceVolts /= sources;
+    const std::map<std::string, double> grounds =
+        run->returnResult ? kiems::dc::partVoltages(*run->returnResult) : std::map<std::string, double>();
+    const int railLayers = static_cast<int>(run->result.layers.size());
     for (std::size_t t = 0; t < run->result.terminals.size(); ++t) {
         const auto& terminal = run->result.terminals[t];
         const bool source = terminal.kind == kiems::dc::Terminal::Kind::Source;
+        const auto ground = grounds.find(terminal.name.substr(0, terminal.name.find(" pin ")));
+        const bool haveGround = terminal.connected && ground != grounds.end();
         auto* item = new QTreeWidgetItem(
             _pins, {QString::fromStdString(terminal.name), source ? tr("Source") : tr("Load"),
                     terminal.connected ? QString("%1 V").arg(terminal.voltage, 0, 'f', 4) : tr("not connected"),
                     terminal.connected && !source ? QString("%1 mV").arg((terminal.voltage - sourceVolts) * 1e3, 0, 'f', 2) : QString(),
+                    haveGround ? QString("%1 mV").arg(ground->second * 1e3, 0, 'f', 2) : QString(),
+                    haveGround ? QString("%1 V").arg(terminal.voltage - ground->second, 0, 'f', 4) : QString(),
                     QString("%1 A").arg(terminal.current, 0, 'g', 4)});
         if (t < run->problem.terminals.size()) {
             item->setData(0, kPointRole, padCentre(run->problem.terminals[t]));
             item->setData(0, kLayerRole, run->problem.terminals[t].layer);
+        }
+    }
+    if (run->returnResult) {
+        for (std::size_t t = 0; t < run->returnResult->terminals.size(); ++t) {
+            const auto& terminal = run->returnResult->terminals[t];
+            auto* item = new QTreeWidgetItem(
+                _pins, {QString::fromStdString(terminal.name),
+                        tr("Return (%1)").arg(QString::fromStdString(run->analysis.referenceNet)),
+                        terminal.connected ? QString("%1 mV").arg(terminal.voltage * 1e3, 0, 'f', 3) : tr("not connected"),
+                        QString(), QString(), QString(), QString("%1 A").arg(std::abs(terminal.current), 0, 'g', 4)});
+            item->setData(0, kPointRole, padCentre(run->returnProblem->terminals[t]));
+            item->setData(0, kLayerRole, railLayers + run->returnProblem->terminals[t].layer);
         }
     }
     std::vector<std::size_t> order(run->result.barrels.size());
@@ -789,13 +850,35 @@ void PowerView::refreshResults() {
         item->setData(0, kPointRole, QPointF(run->problem.barrels[b].x, run->problem.barrels[b].y));
         item->setData(0, kLayerRole, -1);
     }
+    if (run->returnResult) {
+        std::vector<std::size_t> returnOrder(run->returnResult->barrels.size());
+        std::iota(returnOrder.begin(), returnOrder.end(), std::size_t(0));
+        std::sort(returnOrder.begin(), returnOrder.end(), [&](std::size_t x, std::size_t y) {
+            return run->returnResult->barrels[x].current > run->returnResult->barrels[y].current;
+        });
+        for (std::size_t b : returnOrder) {
+            const auto& barrel = run->returnResult->barrels[b];
+            if (!barrel.connected || barrel.current < 1e-6) continue;
+            auto* item = new QTreeWidgetItem(
+                _vias, {QString::fromStdString(run->analysis.referenceNet + ": " + barrel.name),
+                        QString("%1 A").arg(barrel.current, 0, 'g', 4), QString("%1 m\u03A9").arg(barrel.resistance * 1e3, 0, 'f', 3)});
+            item->setData(0, kPointRole, QPointF(run->returnProblem->barrels[b].x, run->returnProblem->barrels[b].y));
+            item->setData(0, kLayerRole, -1);
+        }
+    }
     for (const auto& violation : run->violations) {
         auto* item = new QListWidgetItem(QString::fromStdString(violation.message), _problems);
         item->setForeground(QColor(0xd0, 0x3a, 0x2f));
         item->setData(kPointRole, QPointF(violation.x, violation.y));
-        item->setData(kLayerRole, violation.layer);
+        item->setData(kLayerRole, violation.layer < 0 ? -1 : violation.layer + (violation.onReturn ? railLayers : 0));
     }
     for (const auto& warning : run->result.warnings) _problems->addItem(QString::fromStdString(warning));
+    for (const auto& note : run->notes) _problems->addItem(QString::fromStdString(note));
+    if (run->returnResult) {
+        for (const auto& warning : run->returnResult->warnings) {
+            _problems->addItem(QString::fromStdString(run->analysis.referenceNet + ": " + warning));
+        }
+    }
     for (QTreeWidget* tree : {_pins, _vias}) {
         for (int c = 0; c < tree->columnCount(); ++c) tree->resizeColumnToContents(c);
     }
@@ -838,9 +921,9 @@ void PowerView::updateStatus() {
         _status->setText(tr("Failed"));
     } else {
         QString text = tr("%1 unknowns, %2 s, %3 mW lost in the copper")
-                           .arg(run->result.unknowns)
+                           .arg(run->result.unknowns + (run->returnResult ? run->returnResult->unknowns : 0))
                            .arg(run->seconds, 0, 'f', 2)
-                           .arg(run->result.powerLoss * 1e3, 0, 'f', 1);
+                           .arg((run->result.powerLoss + (run->returnResult ? run->returnResult->powerLoss : 0)) * 1e3, 0, 'f', 1);
         if (analysis && !(run->analysis == *analysis)) text = tr("Out of date: the settings changed since this run. ") + text;
         _status->setText(text);
     }

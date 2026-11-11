@@ -4,14 +4,20 @@
 //   {"name": "+5V", "net": "+5V",
 //    "sources": [{"footprint": "U2", "pin": "5", "voltage": 5.0}],
 //    "loads":   [{"footprint": "J2", "pin": "1", "current": 0.5}, ...],
+//    "reference_net": "GND",
 //    "temperature": 20, "plating": 0.025, "max_element": 0.5, "load_pads": "equipotential"}
 // Temperatures are in C, lengths in mm, voltages in V and currents in A. "load_pads" is
 // "equipotential" (the default: a soldered lead ties each load's pad together) or "distributed" (the
 // load draws evenly from its pad's copper; see dc::Options::equipotentialLoadPads).
+//
+// With a "reference_net", the return is solved too (buildReturnProblem()): each source's own pins on
+// it are held at 0 V and each load's current flows back in through its own pins on it, so a load
+// sees its rail pin's voltage less its ground pins' -- the voltage across the part.
 #pragma once
 
 #include <expected>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,6 +52,8 @@ struct Limits {
 struct AnalysisConfig {
     std::string name;
     std::string net;
+    /// The net the current returns on (usually ground); empty to analyse the rail alone.
+    std::string referenceNet;
     std::vector<PinValue> sources;
     std::vector<PinValue> loads;
     Options options;
@@ -64,10 +72,28 @@ struct Violation {
     /// Where it is: the layer (-1 for a via or pin) and the point, mm.
     int layer = -1;
     double x = 0, y = 0;
+    /// On the reference net rather than the rail.
+    bool onReturn = false;
 };
 
-/// The limits `config` sets that `result` exceeds.
-std::vector<Violation> findViolations(const Problem& problem, const Result& result, const AnalysisConfig& config);
+/// The limits `config` sets that the rail's solution (and its return's, when given) exceeds. With a
+/// return, a load's minimum is checked against the voltage across it.
+std::vector<Violation> findViolations(const Problem& problem, const Result& result, const AnalysisConfig& config,
+                                      const Problem* returnProblem = nullptr, const Result* returnResult = nullptr);
+
+/// The average voltage of each part's pins in `result`, by reference designator -- on the return
+/// net, the ground each part sees.
+std::map<std::string, double> partVoltages(const Result& result);
+
+/// The return's problem: the reference net's copper, each source part's pins on it held at 0 V, and
+/// each load part's total current flowing back in, shared between its pins on it. A load part with
+/// no pin on the reference net is noted in `warnings` and left out.
+std::expected<Problem, std::string> buildReturnProblem(const libkicad::Board& board, const AnalysisConfig& config,
+                                                       std::vector<std::string>* warnings);
+std::expected<Problem, std::string> buildReturnProblem(const std::vector<libkicad::StackupLayer>& stackup,
+                                                       const libkicad::BoardGeometry& geometry,
+                                                       const std::vector<libkicad::ThroughHole>& holes,
+                                                       const AnalysisConfig& config, std::vector<std::string>* warnings);
 
 void to_json(nlohmann::json& j, const AnalysisConfig& config);
 void from_json(const nlohmann::json& j, AnalysisConfig& config);
@@ -101,6 +127,7 @@ double voltageFromNetName(const std::string& net);
 /// (<layer>_voltage.png, <layer>_current_density.png).
 std::expected<void, std::string> writeResult(const Result& result, const AnalysisConfig& config,
                                              const std::vector<Violation>& violations,
-                                             const std::filesystem::path& directory, bool plots = true);
+                                             const std::filesystem::path& directory, bool plots = true,
+                                             const Result* returnResult = nullptr);
 
 } // namespace kiems::dc

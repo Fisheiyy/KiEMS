@@ -25,18 +25,25 @@ int addPowerAnalysis(Document& document, kiems::dc::AnalysisConfig analysis);
 void removePowerAnalysis(Document& document, int index);
 
 /// A new analysis of `net`: its sources and loads from KiCad's pin types (power outputs at the
-/// voltage its name implies, power inputs sharing `totalCurrent`).
+/// voltage its name implies, power inputs sharing `totalCurrent`), returning on the board's ground.
 kiems::dc::AnalysisConfig newPowerAnalysis(const BoardData& board, const QString& net, double totalCurrent = 1.0);
 
 /// The board's nets, likeliest power rails first.
 QStringList powerNetCandidates(const BoardData& board);
+/// The board's ground net, by its name; empty if none looks like one.
+QString groundNetOf(const BoardData& board);
 
 /// One finished run of an analysis.
 struct PowerRun {
     kiems::dc::AnalysisConfig analysis;
     kiems::dc::Problem problem;
     kiems::dc::Result result;
+    /// The reference net's solution, when the analysis names one.
+    std::optional<kiems::dc::Problem> returnProblem;
+    std::optional<kiems::dc::Result> returnResult;
     std::vector<kiems::dc::Violation> violations;
+    /// What the return couldn't model (a load part with no pin on the reference net).
+    std::vector<std::string> notes;
     QString error;
     double seconds = 0;
     bool ok() const { return error.isEmpty(); }

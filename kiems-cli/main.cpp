@@ -647,10 +647,47 @@ int runDCAnalyses(const std::vector<std::string>& names, const std::filesystem::
             logInfo(line.str());
         }
         for (const std::string& warning : result->warnings) logWarning(analysis.name + ": " + warning);
-        const std::vector<dc::Violation> violations = dc::findViolations(*problem, *result, analysis);
+        // The return, when the analysis names its net.
+        std::optional<dc::Problem> returnProblem;
+        std::optional<dc::Result> returnResult;
+        if (!analysis.referenceNet.empty()) {
+            std::vector<std::string> notes;
+            auto built = dc::buildReturnProblem(board, analysis, &notes);
+            for (const std::string& note : notes) logWarning(analysis.name + ": " + note);
+            if (!built) {
+                logError(analysis.name + ": " + built.error());
+                status = EXIT_FAILURE;
+                continue;
+            }
+            auto solved = dc::solve(*built);
+            if (!solved) {
+                logError(analysis.name + " (" + analysis.referenceNet + "): " + solved.error());
+                status = EXIT_FAILURE;
+                continue;
+            }
+            returnProblem = std::move(*built);
+            returnResult = std::move(*solved);
+            for (const std::string& warning : returnResult->warnings) logWarning(analysis.name + " (" + analysis.referenceNet + "): " + warning);
+            const std::map<std::string, double> grounds = dc::partVoltages(*returnResult);
+            for (const dc::TerminalResult& terminal : result->terminals) {
+                if (terminal.kind != dc::Terminal::Kind::Load || !terminal.connected) continue;
+                const auto ground = grounds.find(terminal.name.substr(0, terminal.name.find(" pin ")));
+                if (ground == grounds.end()) continue;
+                std::ostringstream line;
+                line.precision(6);
+                line << "  across " << terminal.name << ": " << terminal.voltage - ground->second << " V ("
+                     << analysis.referenceNet << " at " << ground->second * 1e3 << " mV)";
+                logInfo(line.str());
+            }
+        }
+        const std::vector<dc::Violation> violations =
+            dc::findViolations(*problem, *result, analysis, returnProblem ? &*returnProblem : nullptr,
+                               returnResult ? &*returnResult : nullptr);
         for (const dc::Violation& violation : violations) logWarning(analysis.name + ": " + violation.message);
         const std::filesystem::path directory = paths.baseDir / "dc" / simulationDirectoryName(analysis.name);
-        if (auto written = dc::writeResult(*result, analysis, violations, directory); !written) {
+        if (auto written = dc::writeResult(*result, analysis, violations, directory, true,
+                                           returnResult ? &*returnResult : nullptr);
+            !written) {
             logError(written.error());
             status = EXIT_FAILURE;
             continue;

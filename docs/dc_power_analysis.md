@@ -266,9 +266,11 @@ as `Current` could be read later, through the netlist path that the simulation m
      rail with fixed sources and per-pin loads;
    - the analytic tests;
    - CLI output (JSON plus PNG).
-2. Island diagnostics, violations against limits and via currents are done. Still to do: the
-   reference net, solved together with the rail so a load sees `V_rail − V_ground`. Today the
-   return is a second analysis of the ground net, with the loads' currents negated.
+2. *(Done.)* Island diagnostics, violations against limits, via currents, and the reference
+   net (`"reference_net"`). Each source part's pins on the reference net are held at 0 V, and
+   each load part's current returns through its own pins on it. A load is then checked against
+   `V_rail − V_ground` across its part. On StickHub, +5V returning on GND puts each USB port's
+   ground 2.2–3.0 mV up.
 3. *(Done.)* GUI (`kiems-gui` PowerView):
    - Power page setup with automatic definition from pin types;
    - heatmap, probes and violation list.
