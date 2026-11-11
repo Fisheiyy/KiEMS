@@ -47,6 +47,7 @@ private:
     void openDocumentDialog();
     bool saveDocument();
     bool maybeSave();
+    void saveReport();
     void chooseBoard();
     void loadBoard();
     void addSimulation();

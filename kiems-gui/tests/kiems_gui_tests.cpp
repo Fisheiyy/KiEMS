@@ -7,6 +7,8 @@
 #include "EyeView.hpp"
 #include "JobQueue.hpp"
 #include "QuantityEdit.hpp"
+#include "Report.hpp"
+#include "ResultsView.hpp"
 #include "SettingsPanel.hpp"
 #include "SimulationEditor.hpp"
 #include "TestsPanel.hpp"
@@ -17,9 +19,11 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QLabel>
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -784,6 +788,152 @@ private slots:
 
         queue.clearFinished();
         QVERIFY(queue.jobs().isEmpty());
+    }
+
+    // Probe<n>.csv as the pipeline writes it: excitations that never reached the probe, and Z for
+    // a probe that measures none, are NaN and left out; the Results view gets a Probes tab.
+    void probeResults() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString simulation = dir.filePath("simulation");
+        const QString results = dir.filePath("results");
+        QVERIFY(QDir().mkpath(simulation + "/0") && QDir().mkpath(results));
+        auto write = [](const QString& path, const QByteArray& text) {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+            file.write(text);
+        };
+        write(simulation + "/0/ports.txt", "# header\n0\tU1 pin 5 (/LED3)\tnet=/LED3\texcited\n"
+                                           "1\tR9 pin 2 (/LED3)\tnet=/LED3\tpassive-probe\n");
+        write(simulation + "/Probe1.csv",
+              "Frequency [MHz], re(V-0), im(V-0), re(I-0), im(I-0), re(Z-0), im(Z-0), re(T-0), im(T-0), "
+              "re(V-1), im(V-1), re(I-1), im(I-1), re(Z-1), im(Z-1), re(T-1), im(T-1), \n"
+              "1, 1e-15, 0, 0, 0, nan, nan, 0.6, 0.8, nan, nan, nan, nan, nan, nan, nan, nan\n"
+              "10, 1e-15, 0, 0, 0, nan, nan, 0, 0.5, nan, nan, nan, nan, nan, nan, -nan, -nan\n");
+        write(results + "/Port_0_data.csv", "Frequency [MHz], |S0-0|, Arg(S0-0)\n1, 0.5, 0\n10, 0.5, 0\n");
+
+        const kiems_gui::SimulationResults loaded = kiems_gui::SimulationResults::load(results, simulation);
+        QVERIFY(loaded.error.isEmpty());
+        QCOMPARE(loaded.probes.size(), std::size_t(1));
+        const kiems_gui::ProbeResults& probe = loaded.probes.front();
+        QCOMPARE(probe.port, 1);
+        QVERIFY(probe.frequencyHz == (std::vector<double>{1e6, 10e6}));
+        QCOMPARE(probe.transfer.size(), std::size_t(1));
+        QVERIFY(probe.transfer.contains(0));
+        QVERIFY(std::abs(probe.transfer.at(0)[0] - std::complex<double>(0.6, 0.8)) < 1e-12);
+        QVERIFY(std::abs(probe.transfer.at(0)[1] - std::complex<double>(0, 0.5)) < 1e-12);
+        QVERIFY(probe.impedance.empty());
+
+        kiems_gui::ResultsView view;
+        view.showResults("LED3 probe", loaded);
+        auto* tabs = view.findChild<QTabWidget*>();
+        QVERIFY(tabs);
+        int probesTab = -1;
+        for (int i = 0; i < tabs->count(); ++i) {
+            if (tabs->tabText(i) == "Probes") probesTab = i;
+        }
+        QVERIFY(probesTab >= 0);
+        QVERIFY(!qobject_cast<QLabel*>(tabs->widget(probesTab))); // charts, not the "no probes" message
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            view.resize(1000, 700);
+            tabs->setCurrentIndex(probesTab);
+            QVERIFY(view.grab().save(QDir(snapshots).filePath("probes.png")));
+        }
+    }
+
+    // The report's verdicts follow the macOS app's rule, and the PDF comes out with every
+    // simulation's pages: one with results (its eyes, one failing its mask; its charts; a probe),
+    // one never run.
+    void report() {
+        using kiems_gui::SimulationVerdict;
+        kiems_gui::EyeResults none;
+        QVERIFY(kiems_gui::judgeSimulation(false, none).kind == SimulationVerdict::Kind::NotRun);
+        QVERIFY(kiems_gui::judgeSimulation(true, none).kind == SimulationVerdict::Kind::Warning);
+        kiems_gui::EyeResults unmasked;
+        unmasked.eyes.push_back({});
+        QVERIFY(kiems_gui::judgeSimulation(true, unmasked).kind == SimulationVerdict::Kind::Warning);
+        kiems_gui::EyeResults passing = unmasked;
+        passing.eyes[0].name = "D+";
+        passing.eyes[0].mask = kiems_gui::EyeMaskVerdict{100, 0, 0, true};
+        SimulationVerdict pass = kiems_gui::judgeSimulation(true, passing);
+        QVERIFY(pass.kind == SimulationVerdict::Kind::Pass);
+        QCOMPARE(pass.notes, QStringList{"D+ passes the eye mask."});
+        // A noisy result that hasn't settled across draws is a warning, not a pass.
+        kiems_gui::EyeResults unsettled = passing;
+        unsettled.eyes[0].opening.heightV = 0.5;
+        unsettled.eyes[0].opening.widthUI = 0.8;
+        unsettled.eyes[0].noisyOpening = kiems_gui::EyeOpeningData{0.4, 0.7};
+        unsettled.eyes[0].noiseLowest = kiems_gui::EyeOpeningData{0.3, 0.7};
+        unsettled.eyes[0].noiseHighest = kiems_gui::EyeOpeningData{0.45, 0.7};
+        QVERIFY(kiems_gui::judgeSimulation(true, unsettled).kind == SimulationVerdict::Kind::Warning);
+        kiems_gui::EyeResults failing = passing;
+        failing.eyes[0].noisyMask = kiems_gui::EyeMaskVerdict{100, 3, 0, false};
+        SimulationVerdict fail = kiems_gui::judgeSimulation(true, failing);
+        QVERIFY(fail.kind == SimulationVerdict::Kind::Fail);
+        QCOMPARE(fail.notes, QStringList{"D+ leaves the eye mask (with adversarial signals)."});
+
+        Document document;
+        QVERIFY(makeDocument(document));
+        document.addSimulation("Never run", "GND");
+        const QString simulation = document.simulationDir(0);
+        const QString results = document.resultsDir(0);
+        QVERIFY(QDir().mkpath(simulation + "/0") && QDir().mkpath(results + "/excitations"));
+        auto write = [](const QString& path, const QByteArray& text) {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+            file.write(text);
+        };
+        write(simulation + "/0/ports.txt", "0\tU1 pin 5 (SIG)\tnet=SIG\texcited\n1\tR9 pin 2 (SIG)\tnet=SIG\tpassive-probe\n");
+        QByteArray port = "Frequency [MHz], |S0-0|, Arg(S0-0), |Z0|, Arg(Z0)\n";
+        QByteArray probe = "Frequency [MHz], re(V-0), im(V-0), re(I-0), im(I-0), re(Z-0), im(Z-0), re(T-0), im(T-0)\n";
+        for (int f = 1; f <= 100; ++f) {
+            const double mhz = f * 60.0;
+            port += QByteArray::number(mhz) + ", " + QByteArray::number(0.1 + f * 0.004) + ", " +
+                    QByteArray::number(-f * 0.03) + ", " + QByteArray::number(50 + f * 0.2) + ", 0.1\n";
+            probe += QByteArray::number(mhz) + ", 0, 0, 0, 0, nan, nan, " + QByteArray::number(0.9 - f * 0.003) + ", 0\n";
+        }
+        write(results + "/Port_0_data.csv", port);
+        write(simulation + "/Probe1.csv", probe);
+        QByteArray response = "time_s,voltage_v\n";
+        for (int i = 0; i < 400; ++i) {
+            response += QByteArray::number(i * 25e-12) + "," + QByteArray::number(i < 40 ? 0.0 : 0.4 * (1 - std::exp(-(i - 40) / 30.0))) + "\n";
+        }
+        write(results + "/excitations/U1 pin 5 (SIG)_response.csv", response);
+
+        // Eyes, as kiems writes them: one fast channel that passes, one slow one that fails.
+        std::vector<double> frequencies;
+        for (int f = 1; f <= 6000; ++f) frequencies.push_back(f * 1e6);
+        kiems::EyeTestConfig test;
+        test.standard = kiems::EyeMaskStandard::UsbHighSpeed;
+        test.signalLevel = 0.4;
+        test.mask = {0.075, 0.375, 0.3, 0.525};
+        std::vector<kiems::SimulationEye> eyes;
+        for (const auto& [name, corner] : {std::pair{"Fast channel", 2e9}, std::pair{"Slow channel", 150e6}}) {
+            std::vector<std::complex<double>> transfer;
+            for (const double f : frequencies) {
+                transfer.push_back(std::polar(1.0, -2 * std::numbers::pi * f * 0.7e-9) / std::complex<double>(1.0, f / corner));
+            }
+            auto eye = kiems::computeEyeDiagram(frequencies, transfer, 480e6, {}, {}, test.signalLevel, test.mask);
+            QVERIFY(eye.has_value());
+            eyes.push_back({name, false, 0, std::move(*eye)});
+        }
+        kiems::saveEyeDiagrams(eyes, test, std::filesystem::path(results.toStdWString()) / "eyes.json");
+
+        QTemporaryDir out;
+        const QString pdf = out.filePath("report.pdf");
+        QString error;
+        QVERIFY2(kiems_gui::writeReport(document, pdf, &error), qPrintable(error));
+        QFile written(pdf);
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const QByteArray bytes = written.readAll();
+        QVERIFY(bytes.startsWith("%PDF"));
+        // A summary page, then Trace's pages (eyes and charts) and Never run's.
+        const qsizetype pageCount = bytes.count("/Type /Page") - bytes.count("/Type /Pages");
+        QVERIFY2(pageCount >= 4, qPrintable(QString::number(pageCount)));
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            QFile::remove(QDir(snapshots).filePath("report.pdf"));
+            QVERIFY(QFile::copy(pdf, QDir(snapshots).filePath("report.pdf")));
+        }
     }
 };
 

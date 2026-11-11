@@ -3,6 +3,8 @@
 // and -- when adversarial excitations reach it -- the same eye with their noise added.
 #pragma once
 
+#include "ChartStyle.hpp"
+
 #include <QString>
 #include <QWidget>
 
@@ -44,6 +46,9 @@ struct EyeEntry {
     /// The spread of the noisy opening across independent sets of draws.
     std::optional<EyeOpeningData> noiseLowest;
     std::optional<EyeOpeningData> noiseHighest;
+
+    /// Whether it leaves its mask, without noise or with it.
+    bool failsMask() const { return (mask && !mask->passed) || (noisyMask && !noisyMask->passed); }
 };
 
 struct EyeResults {
@@ -60,5 +65,15 @@ struct EyeResults {
 
 /// A scrolling page of every eye in `results`.
 QWidget* makeEyesPage(const EyeResults& results);
+
+/// One eye's chart: its traces (`noisy`: with the adversarial noise added) and its mask. It draws
+/// from `eye` and `results`, which must outlive it.
+QWidget* makeEyeChart(const EyeEntry& eye, const EyeResults& results, bool noisy, ChartStyle style);
+/// The eye test, its launch level and how many eyes fail, in a sentence.
+QString eyeTestSummary(const EyeResults& results);
+/// "Passes the eye mask (n traces)." or what fails it; empty without a verdict.
+QString eyeVerdictText(const std::optional<EyeMaskVerdict>& verdict);
+/// The eye's opening: height, width, amplitude, Q, jitter and sampling point.
+QString eyeFigures(const EyeOpeningData& opening);
 
 } // namespace kiems_gui

@@ -3,6 +3,7 @@
 #include "BoardView.hpp"
 #include "FieldViewer.hpp"
 #include "Inspector.hpp"
+#include "Report.hpp"
 #include "ResultsView.hpp"
 #include "SimulationEditor.hpp"
 
@@ -290,6 +291,7 @@ void MainWindow::createActions() {
     file->addAction(tr("&New..."), QKeySequence::New, this, &MainWindow::newDocument);
     file->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::openDocumentDialog);
     _saveAction = file->addAction(tr("&Save"), QKeySequence::Save, this, &MainWindow::saveDocument);
+    file->addAction(tr("Save &Report..."), QKeySequence(Qt::CTRL | Qt::Key_P), this, &MainWindow::saveReport);
     file->addSeparator();
     file->addAction(tr("Change &Board..."), this, &MainWindow::chooseBoard);
     file->addSeparator();
@@ -373,6 +375,26 @@ bool MainWindow::maybeSave() {
                                               QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
     if (choice == QMessageBox::Cancel) return false;
     return choice == QMessageBox::Discard || saveDocument();
+}
+
+void MainWindow::saveReport() {
+    if (!_document.isOpen()) return;
+    const QString suggested = QFileInfo(_document.configPath()).absoluteDir().absoluteFilePath(
+        QFileInfo(_document.displayName()).completeBaseName() + " Report.pdf");
+    QString path = QFileDialog::getSaveFileName(this, tr("Save Report"), suggested, tr("PDF documents (*.pdf)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(".pdf", Qt::CaseInsensitive)) path += ".pdf";
+    _statusLabel->setText(tr("Writing the report..."));
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QString error;
+    const bool written = writeReport(_document, path, &error);
+    QApplication::restoreOverrideCursor();
+    if (!written) {
+        _statusLabel->clear();
+        QMessageBox::warning(this, tr("KiEMS"), error);
+        return;
+    }
+    _statusLabel->setText(tr("Saved the report as %1.").arg(QDir::toNativeSeparators(path)));
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

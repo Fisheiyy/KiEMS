@@ -32,6 +32,19 @@ const QColor kKeepOut(0xff, 0x45, 0x3a);
 const QColor kLimit(0xff, 0x9f, 0x0a);
 const QColor kPass(0x4c, 0xd9, 0x64);
 
+/// An eye chart's colours in each style.
+struct EyePalette {
+    QColor background, grid, text, trace, noisyTrace, keepOut, limit;
+
+    static EyePalette of(ChartStyle style) {
+        if (style == ChartStyle::Print) {
+            return {Qt::white,          QColor(0xd4, 0xd4, 0xd8), QColor(0x1f, 0x23, 0x28), QColor(0x1f, 0x6f, 0xd1),
+                    QColor(0xd9, 0x48, 0x0f), QColor(0xd7, 0x00, 0x15), QColor(0xc7, 0x6b, 0x00)};
+        }
+        return {kBackground, kGrid, kText, kTrace, kNoisyTrace, kKeepOut, kLimit};
+    }
+};
+
 std::vector<double> numbers(const nlohmann::json& array) {
     std::vector<double> values;
     if (!array.is_array()) return values;
@@ -89,8 +102,8 @@ std::vector<double> ticks(double low, double high, int count) {
 /// One eye: its traces over -0.5...1.5 UI, the mask on the decision threshold, and axes.
 class EyeChart : public QWidget {
 public:
-    EyeChart(const EyeEntry& eye, const EyeResults& test, QWidget* parent = nullptr)
-        : QWidget(parent), _eye(eye), _test(test) {
+    EyeChart(const EyeEntry& eye, const EyeResults& test, ChartStyle style = ChartStyle::Screen, QWidget* parent = nullptr)
+        : QWidget(parent), _eye(eye), _test(test), _colors(EyePalette::of(style)) {
         setMinimumHeight(300);
     }
 
@@ -103,7 +116,7 @@ protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        painter.fillRect(rect(), kBackground);
+        painter.fillRect(rect(), _colors.background);
         const auto& traces = _noisy && !_eye.noisyTraces.empty() ? _eye.noisyTraces : _eye.traces;
         const auto& time = _eye.timeUI;
         if (time.size() < 2 || traces.empty()) return;
@@ -134,22 +147,22 @@ protected:
         };
 
         // Grid and labels.
-        painter.setPen(QPen(kGrid, 1));
+        painter.setPen(QPen(_colors.grid, 1));
         painter.drawRect(plot);
         painter.setFont(font());
         for (const double v : ticks(low, high, 6)) {
             const double y = point(t0, v).y();
-            painter.setPen(QPen(kGrid, 1));
+            painter.setPen(QPen(_colors.grid, 1));
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-            painter.setPen(kText);
+            painter.setPen(_colors.text);
             const QString label = volts(v);
             painter.drawText(QPointF(plot.left() - metrics.horizontalAdvance(label) - 6, y + metrics.ascent() / 2 - 1), label);
         }
         for (const double t : {-0.5, 0.0, 0.5, 1.0, 1.5}) {
             const double x = point(t, low).x();
-            painter.setPen(QPen(kGrid, 1, t == 0.0 || t == 1.0 ? Qt::DashLine : Qt::SolidLine));
+            painter.setPen(QPen(_colors.grid, 1, t == 0.0 || t == 1.0 ? Qt::DashLine : Qt::SolidLine));
             painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
-            painter.setPen(kText);
+            painter.setPen(_colors.text);
             const QString label = QString::number(t) + " UI";
             const double labelX = std::clamp(x - metrics.horizontalAdvance(label) / 2, 0.0,
                                              width() - metrics.horizontalAdvance(label) - 2);
@@ -160,19 +173,19 @@ protected:
         painter.save();
         painter.setClipRect(plot);
         if (_test.maskY2 > 0) {
-            QColor fill = kLimit;
+            QColor fill = _colors.limit;
             fill.setAlphaF(0.18);
             const double top = point(t0, _eye.thresholdV + _test.maskY2).y();
             const double bottom = point(t0, _eye.thresholdV - _test.maskY2).y();
             painter.fillRect(QRectF(QPointF(plot.left(), plot.top()), QPointF(plot.right(), top)), fill);
             painter.fillRect(QRectF(QPointF(plot.left(), bottom), QPointF(plot.right(), plot.bottom())), fill);
-            painter.setPen(QPen(kLimit, 1.4));
+            painter.setPen(QPen(_colors.limit, 1.4));
             painter.drawLine(QPointF(plot.left(), top), QPointF(plot.right(), top));
             painter.drawLine(QPointF(plot.left(), bottom), QPointF(plot.right(), bottom));
         }
 
         // The traces, faint enough to show where they bunch up.
-        QColor traceColor = _noisy && !_eye.noisyTraces.empty() ? kNoisyTrace : kTrace;
+        QColor traceColor = _noisy && !_eye.noisyTraces.empty() ? _colors.noisyTrace : _colors.trace;
         traceColor.setAlphaF(traces.size() > 200 ? 0.18 : traces.size() > 60 ? 0.3 : 0.55);
         painter.setPen(QPen(traceColor, 1.1));
         for (const auto& trace : traces) {
@@ -196,19 +209,19 @@ protected:
             hexagon.lineTo(point(1 - _test.maskX2, v - _test.maskY1));
             hexagon.lineTo(point(_test.maskX2, v - _test.maskY1));
             hexagon.closeSubpath();
-            QColor fill = kKeepOut;
+            QColor fill = _colors.keepOut;
             fill.setAlphaF(0.3);
             painter.setBrush(fill);
-            painter.setPen(QPen(kKeepOut, 1.5));
+            painter.setPen(QPen(_colors.keepOut, 1.5));
             painter.drawPath(hexagon);
             painter.setBrush(Qt::NoBrush);
         }
         // The decision threshold.
-        painter.setPen(QPen(kText, 1, Qt::DotLine));
+        painter.setPen(QPen(_colors.text, 1, Qt::DotLine));
         painter.drawLine(point(t0, _eye.thresholdV), point(t1, _eye.thresholdV));
         painter.restore();
 
-        painter.setPen(kText);
+        painter.setPen(_colors.text);
         const QString axis = QObject::tr("Time, unit intervals at %1")
                                  .arg(QuantityEdit::format(QuantityEdit::Kind::BitRate, _eye.bitRate));
         painter.drawText(QPointF(plot.center().x() - metrics.horizontalAdvance(axis) / 2, height() - 4), axis);
@@ -217,10 +230,13 @@ protected:
 private:
     const EyeEntry& _eye;
     const EyeResults& _test;
+    EyePalette _colors;
     bool _noisy = false;
 };
 
-QString verdictText(const std::optional<EyeMaskVerdict>& verdict) {
+} // namespace
+
+QString eyeVerdictText(const std::optional<EyeMaskVerdict>& verdict) {
     if (!verdict) return {};
     if (verdict->passed) return QObject::tr("Passes the eye mask (%1 traces).").arg(verdict->traces);
     QStringList problems;
@@ -233,7 +249,7 @@ QString verdictText(const std::optional<EyeMaskVerdict>& verdict) {
     return QObject::tr("Fails the eye mask: %1.").arg(problems.join(QObject::tr("; ")));
 }
 
-QString figures(const EyeOpeningData& opening) {
+QString eyeFigures(const EyeOpeningData& opening) {
     QStringList parts;
     parts << QObject::tr("Height %1").arg(volts(opening.heightV));
     parts << QObject::tr("width %1 UI").arg(QString::number(opening.widthUI, 'f', 3));
@@ -243,6 +259,31 @@ QString figures(const EyeOpeningData& opening) {
     parts << QObject::tr("sampled at %1 UI").arg(QString::number(opening.samplingUI, 'f', 2));
     return parts.join(QString::fromUtf8(" \xC2\xB7 "));
 }
+
+QString eyeTestSummary(const EyeResults& results) {
+    QString summary = QObject::tr("Eye test: %1, launched at %2")
+                          .arg(EyeTestPreset::titleFor(results.standard), volts(results.signalLevel));
+    if (!results.hasMask()) summary += QObject::tr(". No mask is set (the Tests tab sets one), so nothing is judged.");
+    std::size_t failures = 0;
+    for (const EyeEntry& eye : results.eyes) {
+        if (eye.failsMask()) ++failures;
+    }
+    if (results.hasMask()) {
+        summary += failures == 0 ? QObject::tr(". Every eye passes.")
+                 : failures == results.eyes.size() && failures == 1 ? QObject::tr(". It fails.")
+                 : failures == 1 ? QObject::tr(". One eye fails.")
+                                 : QObject::tr(". %1 of %2 eyes fail.").arg(failures).arg(results.eyes.size());
+    }
+    return summary;
+}
+
+QWidget* makeEyeChart(const EyeEntry& eye, const EyeResults& results, bool noisy, ChartStyle style) {
+    auto* chart = new EyeChart(eye, results, style);
+    chart->setNoisy(noisy);
+    return chart;
+}
+
+namespace {
 
 /// One eye with its verdict, its figures and, when there's noise, the choice of which to show.
 class EyePanel : public QWidget {
@@ -292,12 +333,12 @@ private:
         _chart->setNoisy(noisy);
         const auto& verdict = noisy ? _eye.noisyMask : _eye.mask;
         const EyeOpeningData& opening = noisy && _eye.noisyOpening ? *_eye.noisyOpening : _eye.opening;
-        _verdict->setText(verdictText(verdict));
+        _verdict->setText(eyeVerdictText(verdict));
         QPalette palette = _verdict->palette();
         palette.setColor(QPalette::WindowText, verdict && !verdict->passed ? kKeepOut : kPass);
         _verdict->setPalette(palette);
         _verdict->setVisible(verdict.has_value());
-        QString text = figures(opening);
+        QString text = eyeFigures(opening);
         if (noisy && _eye.noiseLowest && _eye.noiseHighest) {
             text += "\n" + QObject::tr("Across independent sets of draws the height ranged %1 to %2.")
                                .arg(volts(_eye.noiseLowest->heightV), volts(_eye.noiseHighest->heightV));
@@ -317,20 +358,7 @@ public:
     explicit EyesPage(const EyeResults& results) : _results(results) {
         auto* content = new QWidget;
         auto* layout = new QVBoxLayout(content);
-        QString summary = QObject::tr("Eye test: %1, launched at %2")
-                              .arg(EyeTestPreset::titleFor(_results.standard), volts(_results.signalLevel));
-        if (!_results.hasMask()) summary += QObject::tr(". No mask is set (the Tests tab sets one), so nothing is judged.");
-        std::size_t failures = 0;
-        for (const EyeEntry& eye : _results.eyes) {
-            if ((eye.mask && !eye.mask->passed) || (eye.noisyMask && !eye.noisyMask->passed)) ++failures;
-        }
-        if (_results.hasMask()) {
-            summary += failures == 0 ? QObject::tr(". Every eye passes.")
-                     : failures == _results.eyes.size() && failures == 1 ? QObject::tr(". It fails.")
-                     : failures == 1 ? QObject::tr(". One eye fails.")
-                                     : QObject::tr(". %1 of %2 eyes fail.").arg(failures).arg(_results.eyes.size());
-        }
-        auto* header = new QLabel(summary);
+        auto* header = new QLabel(eyeTestSummary(_results));
         header->setWordWrap(true);
         layout->addWidget(header);
         for (const EyeEntry& eye : _results.eyes) layout->addWidget(new EyePanel(eye, _results));

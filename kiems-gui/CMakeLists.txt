@@ -14,6 +14,7 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     BoardSetupPanel.hpp
     BoardView.cpp
     BoardView.hpp
+    ChartStyle.hpp
     Document.cpp
     Document.hpp
     EngineSettings.cpp
@@ -34,6 +35,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     PipelineRunner.hpp
     QuantityEdit.cpp
     QuantityEdit.hpp
+    Report.cpp
+    Report.hpp
     ResultsView.cpp
     ResultsView.hpp
     SelectionPanel.cpp
@@ -95,6 +98,10 @@ if(TARGET Qt6::Test)
         JobQueue.hpp
         QuantityEdit.cpp
         QuantityEdit.hpp
+        Report.cpp
+        Report.hpp
+        ResultsView.cpp
+        ResultsView.hpp
         SettingsPanel.cpp
         SettingsPanel.hpp
         SimulationEditor.cpp
@@ -111,7 +118,7 @@ if(TARGET Qt6::Test)
         "${PROJECT_SOURCE_DIR}"
         "${PROJECT_SOURCE_DIR}/libkiems"
         "${PROJECT_SOURCE_DIR}/submodules")
-    target_link_libraries(kiems-gui-tests PRIVATE libkiems libkicad Qt6::Widgets Qt6::Concurrent Qt6::Test)
+    target_link_libraries(kiems-gui-tests PRIVATE libkiems libkicad Qt6::Widgets Qt6::Charts Qt6::Concurrent Qt6::Test)
     if(BUILD_TESTING)
         add_test(NAME kiems-gui-tests COMMAND kiems-gui-tests -platform offscreen)
     endif()
