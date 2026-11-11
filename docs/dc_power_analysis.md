@@ -11,6 +11,16 @@ current.
 
 ## What's built
 
+- **The GUI: `kiems-gui`'s Power page** ([`PowerView.hpp`](../kiems-gui/PowerView.hpp)).
+  - **Setup.** Simulation › Add Power Analysis... picks a net and fills in its sources and loads
+    from KiCad's pin types. The page edits the pins, the solver's options, and the limits:
+    current density on outer and inner layers, current per via, and each load's minimum voltage.
+  - **Results.** A run takes well under a second for a rail like StickHub's, in-process on a
+    worker thread. It shows:
+    - a voltage or current-density map per layer (log scale optional), with hover probes;
+    - the pins' voltages, and the vias' currents, largest first;
+    - the limits broken. Selecting one rings it on the map.
+
 - **The solver: [`libkiems/kiems/dc_analysis.hpp`](../libkiems/kiems/dc_analysis.hpp).**
   - **Mesh.** Each layer's copper for the net is unioned, then meshed with CGAL `Mesh_2`
     (minimum angle about 20.7°, a maximum element size, 0.5 mm by default), with linear
@@ -252,13 +262,18 @@ as `Current` could be read later, through the netlist path that the simulation m
 ## Order of work
 
 1. *(Done; see [What's built](#whats-built).)* libkiems:
-   - mesher plus P1 assembly plus Eigen solve for one rail with fixed sources and per-pin loads;
+   - mesher plus P1 assembly plus a sparse solve (preconditioned CG rather than Eigen) for one
+     rail with fixed sources and per-pin loads;
    - the analytic tests;
    - CLI output (JSON plus PNG).
-2. The reference net, island diagnostics, violations against limits, and via currents.
-3. GUI:
-   - Power tab setup with automatic definition from pin types;
-   - heatmap overlay, probes and violation list.
+2. Island diagnostics, violations against limits and via currents are done. Still to do: the
+   reference net, solved together with the rail so a load sees `V_rail − V_ground`. Today the
+   return is a second analysis of the ground net, with the loads' currents negated.
+3. *(Done.)* GUI (`kiems-gui` PowerView):
+   - Power page setup with automatic definition from pin types;
+   - heatmap, probes and violation list.
+   The page is its own map rather than an overlay on the Board page. It doesn't yet pick pins
+   on the board or add a page to the PDF report.
 4. Series parts and VRMs, so multi-rail trees work; then the equipotential-package load model;
    then remote sense.
 5. Later: electro-thermal coupling. AC PDN impedance is a separate problem, closer to the

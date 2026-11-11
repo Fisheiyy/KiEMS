@@ -1132,6 +1132,7 @@ nlohmann::json EMSConfig::toJson() const {
     out["grid"] = _grid;
     out["simulations"] = _simulations;
     out["board_setup"] = _boardSetup;
+    if (!_dcAnalyses.empty()) out["dc_analyses"] = _dcAnalyses;
     return out;
 }
 
@@ -1240,6 +1241,7 @@ std::expected<EMSConfig, std::string> EMSConfig::parse(const std::filesystem::pa
             self._grid.margin() = Margin{};
         }
         self._boardSetup = jsonCfg.value("board_setup", BoardSetupConfig{});
+        self._dcAnalyses = jsonCfg.value("dc_analyses", nlohmann::json::array());
 
         self._simulations.clear();
         for (const auto& s : jsonCfg.at("simulations")) {
@@ -1265,6 +1267,7 @@ std::expected<EMSConfig, std::string> EMSConfig::parse(const std::filesystem::pa
             out["grid"] = self._grid;
             out["simulations"] = self._simulations;
             out["board_setup"] = self._boardSetup;
+            if (!self._dcAnalyses.empty()) out["dc_analyses"] = self._dcAnalyses;
             std::ofstream file(cfgPath);
             file << out.dump(4);
         }

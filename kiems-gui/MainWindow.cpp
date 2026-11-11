@@ -3,6 +3,8 @@
 #include "BoardView.hpp"
 #include "FieldViewer.hpp"
 #include "GeometryView.hpp"
+#include "PowerAnalysis.hpp"
+#include "PowerView.hpp"
 #include "Inspector.hpp"
 #include "Report.hpp"
 #include "ResultsView.hpp"
@@ -52,6 +54,21 @@ namespace {
 
 constexpr int kSimulationRole = Qt::UserRole;
 constexpr int kPageRole = Qt::UserRole + 1;
+/// A power analysis row's index in the document's list; absent on every other row.
+constexpr int kPowerRole = Qt::UserRole + 3;
+
+/// A small lightning bolt for power analysis rows.
+QIcon boltIcon() {
+    QPixmap pixmap(14, 14);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0xf2, 0xc0, 0x3b));
+    const QPointF bolt[] = {{8.5, 1}, {3, 8}, {6.5, 8}, {5, 13}, {11, 5.5}, {7.5, 5.5}, {9.5, 1}};
+    painter.drawPolygon(bolt, 7);
+    return QIcon(pixmap);
+}
 
 /// The key a sidebar row's expansion is remembered by.
 QString expansionKey(const QTreeWidgetItem* item) {
@@ -146,6 +163,8 @@ MainWindow::MainWindow() {
     _pages->addWidget(_emptyPage);
     _pages->addWidget(_boardPage);
     _pages->addWidget(_geometryView);
+    _powerView = new PowerView(&_document);
+    _pages->addWidget(_powerView);
     _pages->addWidget(_resultsView);
     _pages->addWidget(_fieldViewer);
 
@@ -236,12 +255,17 @@ MainWindow::MainWindow() {
         QMenu menu(this);
         menu.addAction(_addAction);
         menu.addAction(_addSetAction);
+        menu.addAction(_addPowerAction);
         menu.exec(_addButton->mapToGlobal(QPoint(0, _addButton->height())));
     });
     connect(_removeButton, &QPushButton::clicked, this, &MainWindow::removeSimulation);
     connect(_stopButton, &QPushButton::clicked, this, &MainWindow::stopRun);
     connect(_fieldViewer, &FieldViewer::captureRequested, this, [this] { runSimulation(true); });
     connect(_geometryView, &GeometryView::buildRequested, this, &MainWindow::buildGeometry);
+    connect(_powerView, &PowerView::runFinished, this, [this](const QString& name, bool ok) {
+        _statusLabel->setText(ok ? tr("%1's power analysis finished.").arg(name) : tr("%1's power analysis failed.").arg(name));
+        updateActions();
+    });
     connect(_engineButton, &QPushButton::clicked, this, &MainWindow::showEngineSettings);
     connect(&_gpuDevices, &GpuDeviceList::changed, this, &MainWindow::updateEngineButton);
     connect(_sidebar, &QTreeWidget::currentItemChanged, this, &MainWindow::selectionChanged);
@@ -258,6 +282,7 @@ MainWindow::MainWindow() {
         _boardView->setBoard(_boardModel.data());
         _fieldViewer->setBoard(_boardModel.data());
         _inspector->setBoard(_boardModel.data());
+        _powerView->setBoard(_boardModel.data());
         populateLayerList();
         updateHighlights();
         if (_pages->currentWidget() == _geometryView) refreshGeometryPage();
@@ -327,6 +352,8 @@ void MainWindow::createActions() {
     _addAction = simulation->addAction(tr("&Add Simulation..."), this, &MainWindow::addSimulation);
     _addSetAction = simulation->addAction(tr("Add Simulation &Set..."), this, &MainWindow::addSimulationSet);
     _addSetAction->setToolTip(tr("Add a template that generates one simulation per net it selects."));
+    _addPowerAction = simulation->addAction(tr("Add &Power Analysis..."), this, &MainWindow::addPowerAnalysis);
+    _addPowerAction->setToolTip(tr("Add a DC analysis of a power rail: its voltage drop and current density."));
     _removeAction = simulation->addAction(tr("&Remove Simulation"), this, &MainWindow::removeSimulation);
     simulation->addSeparator();
     _runAction = simulation->addAction(tr("&Run"), QKeySequence(Qt::CTRL | Qt::Key_R), this, &MainWindow::runSelected);
@@ -509,6 +536,15 @@ void MainWindow::addSimulationSet() {
 }
 
 void MainWindow::removeSimulation() {
+    if (const int analysis = currentPowerAnalysis(); analysis >= 0) {
+        const auto config = powerAnalysis(_document, analysis);
+        if (QMessageBox::question(this, tr("KiEMS"),
+                                  tr("Remove the power analysis \"%1\"?")
+                                      .arg(config ? QString::fromStdString(config->name) : QString())) == QMessageBox::Yes) {
+            removePowerAnalysis(_document, analysis);
+        }
+        return;
+    }
     const int simulation = currentSimulation();
     if (simulation < 0) return;
     // A set goes with the simulations it generated; they can't be removed on their own, as the set
@@ -559,6 +595,10 @@ QList<int> MainWindow::runTargets(int simulation) const {
 }
 
 void MainWindow::runSimulation(bool storeFields) {
+    if (currentPowerAnalysis() >= 0) {
+        _powerView->run();
+        return;
+    }
     const int simulation = currentSimulation();
     if (simulation < 0) return;
     if (const QString problem = _document.validate(); !problem.isEmpty()) {
@@ -803,6 +843,37 @@ void MainWindow::regenerateChangedSets() {
     }
 }
 
+int MainWindow::currentPowerAnalysis() const {
+    const QTreeWidgetItem* item = _sidebar->currentItem();
+    return item && item->data(0, kPowerRole).isValid() ? item->data(0, kPowerRole).toInt() : -1;
+}
+
+void MainWindow::showPowerAnalysis(int index) {
+    for (QTreeWidgetItemIterator it(_sidebar); *it; ++it) {
+        if ((*it)->data(0, kPowerRole).isValid() && (*it)->data(0, kPowerRole).toInt() == index) {
+            _sidebar->setCurrentItem(*it);
+            selectionChanged();
+            return;
+        }
+    }
+}
+
+void MainWindow::addPowerAnalysis() {
+    if (!_document.isOpen()) return;
+    const auto board = _boardModel.data();
+    if (!board) {
+        QMessageBox::information(this, tr("KiEMS"), tr("The board is still loading; try again once it has."));
+        return;
+    }
+    bool ok = false;
+    const QString net = QInputDialog::getItem(this, tr("Add Power Analysis"), tr("The rail's net:"),
+                                              powerNetCandidates(*board), 0, true, &ok)
+                            .trimmed();
+    if (!ok || net.isEmpty()) return;
+    const int index = kiems_gui::addPowerAnalysis(_document, newPowerAnalysis(*board, net));
+    showPowerAnalysis(index);
+}
+
 int MainWindow::currentSimulation() const {
     const QTreeWidgetItem* item = _sidebar->currentItem();
     return item ? item->data(0, kSimulationRole).toInt() : -1;
@@ -812,6 +883,7 @@ void MainWindow::rebuildSidebar() {
     _rebuildingSidebar = true;
     const int selectedSimulation = currentSimulation();
     const int selectedPage = _sidebar->currentItem() ? _sidebar->currentItem()->data(0, kPageRole).toInt() : -1;
+    const int selectedPower = currentPowerAnalysis();
     for (QTreeWidgetItemIterator it(_sidebar); *it; ++it) {
         if ((*it)->childCount() > 0) _expanded.insert(expansionKey(*it), (*it)->isExpanded());
     }
@@ -835,6 +907,17 @@ void MainWindow::rebuildSidebar() {
         } else if (_document.generatingTemplate(i) < 0) {
             addSimulationItem(nullptr, i, selectedSimulation, selectedPage);
         }
+    }
+    // Power analyses after the simulations.
+    const auto analyses = powerAnalyses(_document);
+    for (int i = 0; i < static_cast<int>(analyses.size()); ++i) {
+        auto* item = new QTreeWidgetItem(_sidebar, {QString::fromStdString(analyses[static_cast<std::size_t>(i)].name)});
+        item->setIcon(0, boltIcon());
+        item->setData(0, kSimulationRole, -1);
+        item->setData(0, kPageRole, static_cast<int>(Page::Power));
+        item->setData(0, kPowerRole, i);
+        item->setToolTip(0, tr("DC power analysis of %1").arg(QString::fromStdString(analyses[static_cast<std::size_t>(i)].net)));
+        if (i == selectedPower) _sidebar->setCurrentItem(item);
     }
     // The selection stays in view, even inside a collapsed row.
     if (QTreeWidgetItem* current = _sidebar->currentItem()) {
@@ -893,6 +976,15 @@ void MainWindow::selectionChanged() {
     const QTreeWidgetItem* item = _sidebar->currentItem();
     const int simulation = item ? item->data(0, kSimulationRole).toInt() : -1;
     const int page = item ? item->data(0, kPageRole).toInt() : -1;
+    if (page == static_cast<int>(Page::Power)) {
+        _inspector->setSimulation(-1);
+        _powerView->showAnalysis(item->data(0, kPowerRole).toInt());
+        _pages->setCurrentWidget(_powerView);
+        _inspector->hide();
+        updateHighlights();
+        updateActions();
+        return;
+    }
     _inspector->setSimulation(simulation);
     updateHighlights();
     updateActions();
@@ -996,13 +1088,15 @@ void MainWindow::updateActions() {
     _saveAction->setEnabled(open);
     _addAction->setEnabled(open);
     _addSetAction->setEnabled(open);
+    _addPowerAction->setEnabled(open);
     _addButton->setEnabled(open);
-    _removeAction->setEnabled(haveSimulation && !busy && !generated);
+    _removeAction->setEnabled((haveSimulation && !busy && !generated) || currentPowerAnalysis() >= 0);
     _removeButton->setEnabled(_removeAction->isEnabled());
     _removeButton->setToolTip(generated ? tr("A simulation its set generated goes when the set no longer selects its net.")
                                         : QString());
-    _runAction->setEnabled(haveSimulation && canRun && !runTargets(simulation).isEmpty());
-    _runFieldsAction->setEnabled(_runAction->isEnabled());
+    _runAction->setEnabled((haveSimulation && canRun && !runTargets(simulation).isEmpty()) ||
+                           (currentPowerAnalysis() >= 0 && _powerView->canRun()));
+    _runFieldsAction->setEnabled(_runAction->isEnabled() && currentPowerAnalysis() < 0);
     _runAllAction->setEnabled(open && _document.simulationCount() > 0 && canRun);
     _stopAction->setEnabled(_jobs.isBusy());
 }

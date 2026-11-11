@@ -1653,6 +1653,11 @@ public:
     const BoardSetupConfig& boardSetup() const { return _boardSetup; }
     BoardSetupConfig& boardSetup() { return _boardSetup; }
 
+    /// The document's DC power analyses ("dc_analyses"), kept as they are so a document saved by
+    /// an app that doesn't edit them still has them. dc_board.hpp's kiems::dc::analysesIn() reads them.
+    const nlohmann::json& dcAnalyses() const { return _dcAnalyses; }
+    void setDCAnalyses(nlohmann::json value) { _dcAnalyses = std::move(value); }
+
     const Frequency& frequency() const { return _frequency; }
     void setFrequency(Frequency value) { _frequency = value; }
     /// Hard cap on FDTD timesteps -- the run stops here even if Copper's -60dB energy-decay end
@@ -1708,6 +1713,7 @@ private:
     std::optional<std::filesystem::path> _kicadPcbPath;
     std::vector<SimulationConfig> _simulations;
     BoardSetupConfig _boardSetup;
+    nlohmann::json _dcAnalyses = nlohmann::json::array();
     Frequency _frequency;
     std::int32_t _maxSteps = 100000;
     std::int32_t _pixelSize = 5;

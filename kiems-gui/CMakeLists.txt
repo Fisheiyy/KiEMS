@@ -37,6 +37,10 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     MainWindow.hpp
     PipelineRunner.cpp
     PipelineRunner.hpp
+    PowerAnalysis.cpp
+    PowerAnalysis.hpp
+    PowerView.cpp
+    PowerView.hpp
     QuantityEdit.cpp
     QuantityEdit.hpp
     Report.cpp
@@ -109,6 +113,10 @@ if(TARGET Qt6::Test)
         GeometryView.hpp
         JobQueue.cpp
         JobQueue.hpp
+        PowerAnalysis.cpp
+        PowerAnalysis.hpp
+        PowerView.cpp
+        PowerView.hpp
         QuantityEdit.cpp
         QuantityEdit.hpp
         Report.cpp

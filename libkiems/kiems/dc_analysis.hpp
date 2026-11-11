@@ -76,6 +76,8 @@ struct Options {
     /// through the pad to the next load meets no resistance across it -- or its current is drawn
     /// evenly from the pad's copper, which then conducts like any other.
     bool equipotentialLoadPads = true;
+
+    bool operator==(const Options&) const = default;
 };
 
 struct Problem {

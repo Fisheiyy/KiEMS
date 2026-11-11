@@ -8,6 +8,8 @@
 #include "GeometryScene.hpp"
 #include "GeometryView.hpp"
 #include "JobQueue.hpp"
+#include "PowerAnalysis.hpp"
+#include "PowerView.hpp"
 #include "QuantityEdit.hpp"
 #include "Report.hpp"
 #include "ResultsView.hpp"
@@ -33,6 +35,7 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QTabWidget>
+#include <QTreeWidget>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -989,6 +992,80 @@ private slots:
         if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
             image.save(QDir(snapshots).filePath("geometry.png"));
             view.grab().save(QDir(snapshots).filePath("geometry_page.png"));
+        }
+    }
+
+    void powerAnalysis() {
+        // A 10 x 1 mm +5V strip on F.Cu: U1's power output pin at one end, J1's power input at the other.
+        auto board = std::make_shared<kiems_gui::BoardData>();
+        using Kind = libkicad::StackupLayerKind;
+        board->stackup = {{Kind::Copper, "F.Cu", 0.035, 0, 0}, {Kind::Core, "Dielectric 1", 1.51, 4.5, 0.02},
+                          {Kind::Copper, "B.Cu", 0.035, 0, 0}};
+        board->copperLayers = {"F.Cu", "B.Cu"};
+        board->nets = {"GND", "+5V", "SIG"};
+        const auto rect = [](double x0, double y0, double x1, double y1) {
+            return libkicad::PolygonLoop{false, {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}};
+        };
+        board->geometry.outline = {rect(-1, -1, 11, 2)};
+        board->geometry.copper = {{"+5V", "F.Cu", false, "", "", rect(0, 0, 10, 1)},
+                                  {"+5V", "F.Cu", false, "U1", "1", rect(0, 0, 0.15, 1)},
+                                  {"+5V", "F.Cu", false, "J1", "1", rect(9.85, 0, 10, 1)}};
+        board->pads = {{"U1", "1", "+5V", "power_out", 0.075, 0.5, 0, "F.Cu", 0.15, 1},
+                       {"J1", "1", "+5V", "power_in", 9.925, 0.5, 0, "F.Cu", 0.15, 1},
+                       {"U1", "2", "GND", "power_in", 0, 2, 0, "F.Cu", 0.5, 0.5}};
+        QCOMPARE(kiems_gui::powerNetCandidates(*board).first(), QString("GND"));
+        QVERIFY(kiems_gui::powerNetCandidates(*board).indexOf("SIG") > kiems_gui::powerNetCandidates(*board).indexOf("+5V"));
+
+        Document document;
+        QVERIFY(makeDocument(document));
+        auto analysis = kiems_gui::newPowerAnalysis(*board, "+5V", 2.0);
+        QCOMPARE(analysis.sources.size(), std::size_t(1));
+        QCOMPARE(analysis.sources[0].value, 5.0); // from the net's name
+        QCOMPARE(analysis.loads.size(), std::size_t(1));
+        QCOMPARE(analysis.loads[0].value, 2.0);
+        QCOMPARE(kiems_gui::addPowerAnalysis(document, analysis), 0);
+        QCOMPARE(kiems_gui::addPowerAnalysis(document, analysis), 1);
+        QCOMPARE(kiems_gui::powerAnalysis(document, 1)->name, std::string("+5V 2"));
+        kiems_gui::removePowerAnalysis(document, 1);
+        QCOMPARE(kiems_gui::powerAnalysisCount(document), 1);
+        QVERIFY2(document.validate().isEmpty(), qPrintable(document.validate())); // libkiems still reads it
+
+        // Solved here, in-process: 2 A over 9.7 squares of 35 um copper.
+        const double sheet = 1.72e-8 / 35e-6;
+        const auto run = kiems_gui::runPowerAnalysis(*board, *kiems_gui::powerAnalysis(document, 0));
+        QVERIFY2(run->ok(), qPrintable(run->error));
+        QVERIFY(std::abs((5.0 - run->result.terminals[1].voltage) - 2.0 * 9.7 * sheet) < 2e-3 * 2.0 * 9.7 * sheet);
+        QVERIFY(run->violations.empty());
+
+        // Limits it breaks: the current density, and the load's minimum voltage.
+        analysis = *kiems_gui::powerAnalysis(document, 0);
+        analysis.limits.outerCurrentDensity = 10.0;
+        analysis.loads[0].minimumVoltage = 4.999;
+        kiems_gui::setPowerAnalysis(document, 0, analysis);
+        const auto limited = kiems_gui::runPowerAnalysis(*board, *kiems_gui::powerAnalysis(document, 0));
+        QCOMPARE(limited->violations.size(), std::size_t(2));
+        QVERIFY(limited->violations[0].kind == kiems::dc::Violation::Kind::Voltage);
+        QVERIFY(limited->violations[1].kind == kiems::dc::Violation::Kind::CurrentDensity);
+        QCOMPARE(document.documentValue("/dc_analyses")[0]["max_current_density_outer"].get<double>(), 10.0);
+
+        // The page runs it in the background and lists what it found.
+        QWidget host;
+        kiems_gui::PowerView view(&document, &host);
+        view.resize(1300, 850);
+        view.setBoard(board);
+        view.showAnalysis(0);
+        QVERIFY(view.canRun());
+        QSignalSpy finished(&view, &kiems_gui::PowerView::runFinished);
+        view.run();
+        QVERIFY(finished.wait(20000));
+        QVERIFY(finished.first().at(1).toBool());
+        QVERIFY(view.currentRun() && view.currentRun()->ok());
+        QCOMPARE(view.findChild<QTreeWidget*>("pins")->topLevelItemCount(), 2);
+        QCOMPARE(view.findChild<QListWidget*>("problems")->count(), 2); // the two limits broken
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            view.setAttribute(Qt::WA_DontShowOnScreen);
+            view.show();
+            view.grab().save(QDir(snapshots).filePath("power.png"));
         }
     }
 

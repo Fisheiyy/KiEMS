@@ -647,8 +647,10 @@ int runDCAnalyses(const std::vector<std::string>& names, const std::filesystem::
             logInfo(line.str());
         }
         for (const std::string& warning : result->warnings) logWarning(analysis.name + ": " + warning);
+        const std::vector<dc::Violation> violations = dc::findViolations(*problem, *result, analysis);
+        for (const dc::Violation& violation : violations) logWarning(analysis.name + ": " + violation.message);
         const std::filesystem::path directory = paths.baseDir / "dc" / simulationDirectoryName(analysis.name);
-        if (auto written = dc::writeResult(*result, analysis, directory); !written) {
+        if (auto written = dc::writeResult(*result, analysis, violations, directory); !written) {
             logError(written.error());
             status = EXIT_FAILURE;
             continue;

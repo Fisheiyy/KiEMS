@@ -30,6 +30,7 @@ namespace kiems_gui {
 class BoardView;
 class FieldViewer;
 class GeometryView;
+class PowerView;
 class Inspector;
 class ResultsView;
 
@@ -44,7 +45,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
-    enum class Page { Board, Geometry, Results, Fields };
+    enum class Page { Board, Geometry, Results, Fields, Power };
 
     void createActions();
     void newDocument();
@@ -57,6 +58,11 @@ private:
     void addSimulation();
     /// Adds a Simulation Set template (see SimulationSet.hpp).
     void addSimulationSet();
+    /// Adds a DC power analysis of a net the user picks (see PowerAnalysis.hpp).
+    void addPowerAnalysis();
+    /// The power analysis whose row is selected; -1 if none is.
+    int currentPowerAnalysis() const;
+    void showPowerAnalysis(int index);
     /// The ground net a new simulation starts with, before Board Setup has its say.
     QString guessGroundNet() const;
     void removeSimulation();
@@ -120,6 +126,7 @@ private:
     ResultsView* _resultsView;
     FieldViewer* _fieldViewer;
     GeometryView* _geometryView;
+    PowerView* _powerView;
     Inspector* _inspector;
     QDockWidget* _logDock;
     QDockWidget* _jobsDock;
@@ -139,6 +146,7 @@ private:
     QAction* _stopAction;
     QAction* _addAction;
     QAction* _addSetAction;
+    QAction* _addPowerAction;
     QAction* _removeAction;
     bool _rebuildingSidebar = false;
     /// Whether each sidebar row with children (by simulation name, or "set:" and the set's id) was
