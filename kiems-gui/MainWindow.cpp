@@ -2,6 +2,7 @@
 
 #include "BoardView.hpp"
 #include "FieldViewer.hpp"
+#include "GeometryView.hpp"
 #include "Inspector.hpp"
 #include "Report.hpp"
 #include "ResultsView.hpp"
@@ -141,8 +142,10 @@ MainWindow::MainWindow() {
     boardLayout->addWidget(_layerList, 0, 0, Qt::AlignTop | Qt::AlignLeft);
     _resultsView = new ResultsView;
     _fieldViewer = new FieldViewer;
+    _geometryView = new GeometryView;
     _pages->addWidget(_emptyPage);
     _pages->addWidget(_boardPage);
+    _pages->addWidget(_geometryView);
     _pages->addWidget(_resultsView);
     _pages->addWidget(_fieldViewer);
 
@@ -238,6 +241,7 @@ MainWindow::MainWindow() {
     connect(_removeButton, &QPushButton::clicked, this, &MainWindow::removeSimulation);
     connect(_stopButton, &QPushButton::clicked, this, &MainWindow::stopRun);
     connect(_fieldViewer, &FieldViewer::captureRequested, this, [this] { runSimulation(true); });
+    connect(_geometryView, &GeometryView::buildRequested, this, &MainWindow::buildGeometry);
     connect(_engineButton, &QPushButton::clicked, this, &MainWindow::showEngineSettings);
     connect(&_gpuDevices, &GpuDeviceList::changed, this, &MainWindow::updateEngineButton);
     connect(_sidebar, &QTreeWidget::currentItemChanged, this, &MainWindow::selectionChanged);
@@ -256,6 +260,7 @@ MainWindow::MainWindow() {
         _inspector->setBoard(_boardModel.data());
         populateLayerList();
         updateHighlights();
+        if (_pages->currentWidget() == _geometryView) refreshGeometryPage();
         // Sets edited before the board was there to match against.
         scheduleSetRegeneration();
     });
@@ -272,6 +277,9 @@ MainWindow::MainWindow() {
         updateJobList();
         updateRunStatus();
         updateActions();
+        if (_pages->currentWidget() == _geometryView && currentSimulation() >= 0) {
+            _geometryView->setBuilding(_jobs.contains(_document.simulationName(currentSimulation())));
+        }
     });
     connect(&_jobs, &JobQueue::jobStarted, this, [this] { rebuildSidebar(); });
     connect(&_jobs, &JobQueue::jobFinished, this, &MainWindow::jobFinished);
@@ -525,6 +533,26 @@ void MainWindow::runSelected() {
     runSimulation(false);
 }
 
+void MainWindow::buildGeometry() {
+    const int simulation = currentSimulation();
+    if (simulation < 0 || _document.isSimulationSet(simulation)) return;
+    if (const QString problem = _document.validate(); !problem.isEmpty()) {
+        QMessageBox::warning(this, tr("KiEMS"), tr("The geometry can't be built yet:\n\n%1").arg(problem));
+        return;
+    }
+    _jobs.enqueue(_document.simulationName(simulation), false, true);
+    refreshGeometryPage();
+}
+
+void MainWindow::refreshGeometryPage() {
+    const int simulation = currentSimulation();
+    if (simulation < 0 || _document.isSimulationSet(simulation)) return;
+    const auto board = _boardModel.data();
+    const GeometryContext context = board ? GeometryContext::of(*board, _document, simulation) : GeometryContext();
+    _geometryView->setBuilding(_jobs.contains(_document.simulationName(simulation)));
+    _geometryView->showSimulation(_document.simulationName(simulation), _document.geometryFile(simulation), context);
+}
+
 QList<int> MainWindow::runTargets(int simulation) const {
     if (_document.isSimulationSet(simulation)) return generatedSimulations(_document, simulation);
     return simulation >= 0 ? QList<int>{simulation} : QList<int>();
@@ -602,7 +630,7 @@ bool MainWindow::startJob(const Job& job, QString* error) {
         *error = tr("The simulation no longer exists.");
         return false;
     }
-    if (!_document.mainExcitation(simulation)) {
+    if (!job.geometryOnly && !_document.mainExcitation(simulation)) {
         *error = tr("It has no pin to drive.");
         return false;
     }
@@ -621,7 +649,10 @@ bool MainWindow::startJob(const Job& job, QString* error) {
     // A run clears the simulation's old output, which Windows refuses while a file in it is open:
     // let go of the Field Viewer's series first if it's showing this simulation.
     if (_fieldViewer->simulationDirectory() == _document.simulationDir(simulation)) _fieldViewer->close();
-    if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), job.simulation, arguments, error)) return false;
+    if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), job.simulation, arguments, error,
+                       job.geometryOnly)) {
+        return false;
+    }
     _logDock->show();
     return true;
 }
@@ -640,7 +671,7 @@ void MainWindow::jobFinished(const Job& job) {
     const bool lone = _batchStarted <= 1 && _jobs.queuedCount() == 0;
     const int simulation = _document.simulationIndex(job.simulation);
     if (job.status == Job::Status::Succeeded && simulation >= 0) {
-        if (lone) showPage(simulation, job.storeFields ? Page::Fields : Page::Results);
+        if (lone) showPage(simulation, job.geometryOnly ? Page::Geometry : job.storeFields ? Page::Fields : Page::Results);
         else if (currentSimulation() == simulation) selectionChanged();
     } else if (job.status == Job::Status::Failed && lone) {
         QMessageBox::warning(this, tr("KiEMS"), tr("The simulation failed:\n\n%1").arg(job.message));
@@ -663,7 +694,10 @@ void MainWindow::updateJobList() {
                 progress = QString("%1%").arg(static_cast<int>(job.fraction * 100));
             }
             auto* item = new QTreeWidgetItem(
-                _jobList, {job.storeFields ? tr("%1 (with fields)").arg(job.simulation) : job.simulation, status, progress});
+                _jobList, {job.geometryOnly  ? tr("%1 (geometry)").arg(job.simulation)
+                           : job.storeFields ? tr("%1 (with fields)").arg(job.simulation)
+                                             : job.simulation,
+                           status, progress});
             item->setData(0, Qt::UserRole, job.id);
             if (!job.message.isEmpty()) {
                 item->setToolTip(0, job.message);
@@ -829,6 +863,10 @@ QTreeWidgetItem* MainWindow::addSimulationItem(QTreeWidgetItem* parent, int i, i
     board->setData(0, kSimulationRole, i);
     board->setData(0, kPageRole, static_cast<int>(Page::Board));
     board->setIcon(0, statusDot(_document.hasGeometry(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
+    auto* geometry = new QTreeWidgetItem(top, {tr("Geometry")});
+    geometry->setData(0, kSimulationRole, i);
+    geometry->setData(0, kPageRole, static_cast<int>(Page::Geometry));
+    geometry->setIcon(0, statusDot(_document.hasGeometry(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
     auto* results = new QTreeWidgetItem(top, {tr("Simulation Results")});
     results->setData(0, kSimulationRole, i);
     results->setData(0, kPageRole, static_cast<int>(Page::Results));
@@ -841,10 +879,11 @@ QTreeWidgetItem* MainWindow::addSimulationItem(QTreeWidgetItem* parent, int i, i
     // A set's simulations start folded, as there can be many.
     top->setExpanded(_expanded.value(expansionKey(top), parent == nullptr));
     if (i == selectedSimulation) {
-        _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)  ? results
-                                 : selectedPage == static_cast<int>(Page::Fields) ? fields
-                                 : selectedPage == static_cast<int>(Page::Board)  ? board
-                                                                                  : top);
+        _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)    ? results
+                                 : selectedPage == static_cast<int>(Page::Fields)   ? fields
+                                 : selectedPage == static_cast<int>(Page::Geometry) ? geometry
+                                 : selectedPage == static_cast<int>(Page::Board)    ? board
+                                                                                    : top);
     }
     return top;
 }
@@ -862,6 +901,10 @@ void MainWindow::selectionChanged() {
                                   SimulationResults::load(_document.resultsDir(simulation),
                                                           _document.simulationDir(simulation)));
         _pages->setCurrentWidget(_resultsView);
+        _inspector->hide();
+    } else if (page == static_cast<int>(Page::Geometry)) {
+        refreshGeometryPage();
+        _pages->setCurrentWidget(_geometryView);
         _inspector->hide();
     } else if (page == static_cast<int>(Page::Fields)) {
         const SimulationResults results =
@@ -881,10 +924,10 @@ void MainWindow::showPage(int simulation, Page page) {
         QTreeWidgetItem* item = *it;
         if (item->data(0, kSimulationRole).toInt() != simulation || item->data(0, kPageRole).toInt() != -1) continue;
         // A set's row has no pages of its own.
-        const int child = page == Page::Board ? 0 : page == Page::Results ? 1 : 2;
-        QTreeWidgetItem* target = item->childCount() == 3 && item->child(child)->data(0, kPageRole).toInt() >= 0
-                                      ? item->child(child)
-                                      : item;
+        QTreeWidgetItem* target = item;
+        for (int c = 0; c < item->childCount(); ++c) {
+            if (item->child(c)->data(0, kPageRole).toInt() == static_cast<int>(page)) target = item->child(c);
+        }
         for (QTreeWidgetItem* parent = target->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
         _sidebar->setCurrentItem(target);
         selectionChanged();

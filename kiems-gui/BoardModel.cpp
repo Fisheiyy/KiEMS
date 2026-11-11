@@ -60,7 +60,10 @@ LoadResult loadBoard(const QString& boardPath) {
         for (const auto& layer : *stackup) {
             if (layer.kind == libkicad::StackupLayerKind::Copper) data->copperLayers << QString::fromStdString(layer.name);
         }
+        data->stackup = std::move(*stackup);
     }
+    // For the Geometry page's vias; a board without them still loads.
+    if (auto holes = board.throughHoles()) data->throughHoles = std::move(*holes);
     auto geometry = board.boardGeometry();
     if (!geometry) return fail("Couldn't read the board's geometry", geometry.error());
     data->geometry = std::move(*geometry);

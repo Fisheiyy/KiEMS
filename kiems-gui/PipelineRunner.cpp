@@ -29,7 +29,7 @@ QString PipelineRunner::cliPath() {
 }
 
 bool PipelineRunner::start(const QString& configPath, const QString& kicadPcbPath, const QString& simulation,
-                           const QStringList& engineArguments, QString* error) {
+                           const QStringList& engineArguments, QString* error, bool geometryOnly) {
     if (isRunning()) {
         if (error) *error = tr("A simulation is already running.");
         return false;
@@ -45,7 +45,7 @@ bool PipelineRunner::start(const QString& configPath, const QString& kicadPcbPat
     _stopping = false;
     _process = new QProcess(this);
     _process->setProgram(cli);
-    QStringList arguments{"-c", configPath, "--simulation", simulation, "--all"};
+    QStringList arguments{"-c", configPath, "--simulation", simulation, geometryOnly ? "--geometry" : "--all"};
     if (!kicadPcbPath.isEmpty()) arguments << "--input" << kicadPcbPath;
     arguments << engineArguments;
     _process->setArguments(arguments);

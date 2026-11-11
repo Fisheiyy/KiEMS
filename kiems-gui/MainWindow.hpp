@@ -29,6 +29,7 @@ namespace kiems_gui {
 
 class BoardView;
 class FieldViewer;
+class GeometryView;
 class Inspector;
 class ResultsView;
 
@@ -43,7 +44,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
-    enum class Page { Board, Results, Fields };
+    enum class Page { Board, Geometry, Results, Fields };
 
     void createActions();
     void newDocument();
@@ -63,6 +64,10 @@ private:
     /// Queues the selected simulation; `storeFields` also keeps its field frames for the Field
     /// Viewer.
     void runSimulation(bool storeFields);
+    /// Queues building the selected simulation's geometry alone, for the Geometry page.
+    void buildGeometry();
+    /// Shows the Geometry page's simulation again, with what's changed since.
+    void refreshGeometryPage();
     /// Queues every simulation that has a pin to drive.
     void runAll();
     void stopRun();
@@ -114,6 +119,7 @@ private:
     BoardView* _boardView;
     ResultsView* _resultsView;
     FieldViewer* _fieldViewer;
+    GeometryView* _geometryView;
     Inspector* _inspector;
     QDockWidget* _logDock;
     QDockWidget* _jobsDock;

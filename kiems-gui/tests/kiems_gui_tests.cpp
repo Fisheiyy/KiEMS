@@ -5,6 +5,8 @@
 #include "Document.hpp"
 #include "EyeTestPresets.hpp"
 #include "EyeView.hpp"
+#include "GeometryScene.hpp"
+#include "GeometryView.hpp"
 #include "JobQueue.hpp"
 #include "QuantityEdit.hpp"
 #include "Report.hpp"
@@ -22,6 +24,8 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -863,6 +867,129 @@ private slots:
         for (int index : kiems_gui::generatedSimulations(document, set)) names << document.simulationName(index);
         QCOMPARE(names, QStringList({"Data DQ1", "Data DQ10"}));
         QVERIFY2(document.validate().isEmpty(), qPrintable(document.validate()));
+    }
+
+    void geometryScene() {
+        // A 10 mm square cut of a 2-layer, 1.51 mm board, as the geometry stage writes it (0.1 um
+        // units): a triangle of copper on each layer, a stitching via, a rejected one, top solder
+        // mask, and a small mesh.
+        const auto tri = [](double x0, double y0, double x1, double y1, double x2, double y2) {
+            return nlohmann::json{{"a", {{"x", x0}, {"y", y0}}}, {"b", {{"x", x1}, {"y", y1}}}, {"c", {{"x", x2}, {"y", y2}}}};
+        };
+        const auto pt = [](double x, double y) { return nlohmann::json{{"x", x}, {"y", y}}; };
+        const nlohmann::json square = {pt(0, 0), pt(100000, 0), pt(100000, 100000), pt(0, 100000)};
+        nlohmann::json json = {
+            {"geometry",
+             {{"slicedBoard",
+               {{"previewLayerTriangles",
+                 {{tri(0, 0, 100000, 0, 0, 100000)}, {tri(0, 0, 100000, 0, 100000, 100000)}}},
+                {"topMaskTriangles", {tri(0, 0, 100000, 0, 0, 100000)}},
+                {"bottomMaskTriangles", nlohmann::json::array()},
+                {"cutoutLoops", {square}},
+                {"outline", square},
+                {"npthHoleLoops", nlohmann::json::array()},
+                {"stitchingVias", {{{"x", 90000.0}, {"y", 90000.0}, {"diameter", 3000.0}, {"annularRingDiameter", 6000.0}}}},
+                {"failedStitchingViaAttempts", {pt(10000, 90000)}},
+                {"bounds", {{"xMin", 0.0}, {"yMin", 0.0}, {"xMax", 100000.0}, {"yMax", 100000.0}}}}}}},
+            {"grid",
+             {{"gridLines",
+               {{"x", {-20000.0, 0.0, 50000.0, 100000.0, 120000.0}},
+                {"y", {-20000.0, 0.0, 50000.0, 100000.0, 120000.0}},
+                {"z", {-35100.0, -15100.0, 0.0, 20000.0}},
+                {"pmlInnerXMin", -10000.0}, {"pmlInnerXMax", 110000.0},
+                {"pmlInnerYMin", -10000.0}, {"pmlInnerYMax", 110000.0},
+                {"pmlInnerZMin", -30000.0}, {"pmlInnerZMax", 15000.0}}}}}};
+        const QString path = _directory.filePath("geometry.json");
+        {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(QByteArray::fromStdString(json.dump()));
+        }
+        const kiems_gui::SimulationGeometry geometry = kiems_gui::SimulationGeometry::load(path);
+        QVERIFY2(geometry.isValid(), qPrintable(geometry.error));
+        QCOMPARE(geometry.layerTriangles.size(), std::size_t(2));
+        QCOMPARE(geometry.gridZ.size(), std::size_t(4));
+        QVERIFY(!kiems_gui::SimulationGeometry::load(_directory.filePath("missing.json")).isValid());
+
+        // The board: its stackup, outline from (0, 0), one via inside the cut and one far outside,
+        // and U1 driving SIG into U2.
+        auto board = fakeBoard();
+        using Kind = libkicad::StackupLayerKind;
+        board->stackup = {{Kind::SolderMaskTop, "F.Mask", 0.01, 3.3, 0.02}, {Kind::Copper, "F.Cu", 0.035, 0, 0},
+                          {Kind::Core, "Dielectric 1", 1.51, 4.5, 0.02}, {Kind::Copper, "B.Cu", 0.035, 0, 0},
+                          {Kind::SolderMaskBottom, "B.Mask", 0.01, 3.3, 0.02}};
+        board->copperLayers = {"F.Cu", "B.Cu"};
+        board->geometry.outline = {{false, {{0, 0}, {10, 0}, {10, 10}, {0, 10}}}};
+        libkicad::ThroughHole inside;
+        inside.xMm = 5;
+        inside.yMm = 5;
+        inside.drillWidthMm = inside.drillHeightMm = 0.3;
+        inside.padWidthMm = inside.padHeightMm = 0.6;
+        libkicad::ThroughHole outside = inside;
+        outside.xMm = 40;
+        board->throughHoles = {inside, outside};
+        board->pads = {{"U1", "1", "SIG", "output", 2, 2, 0, "F.Cu", 1, 0.5},
+                       {"U2", "1", "SIG", "input", 8, 8, 90, "F.Cu", 1, 0.5}};
+        board->layerColors = {{"F.Cu", "#C83434FF"}};
+
+        Document document;
+        QVERIFY(makeDocument(document));
+        document.setMainExcitation(0, PinRef{"U1", "1"});
+        const auto context = kiems_gui::GeometryContext::of(*board, document, 0);
+        QCOMPARE(context.metalNames, QStringList({"F.Cu", "B.Cu"}));
+        QCOMPARE(context.metalZ, (std::vector<double>{0, -15100}));
+        QCOMPARE(context.topMaskZ, 100.0);
+        QCOMPARE(context.bottomMaskZ, -15200.0);
+        QCOMPARE(context.boardVias.size(), std::size_t(2));
+        QCOMPARE(context.boardVias[0].x, 50000.0);
+        QCOMPARE(context.ports.size(), std::size_t(2));
+        QCOMPARE(context.ports[0].name, QString("U1.1"));
+        QVERIFY(context.ports[0].kind == kiems_gui::PortKind::Excited);
+        QVERIFY(context.ports[1].kind == kiems_gui::PortKind::Load); // U2's input absorbs by default
+
+        const kiems_gui::GeometryScene scene = kiems_gui::buildGeometryScene(geometry, context);
+        QStringList names;
+        for (const auto& group : scene.groups) names << group.name;
+        QCOMPARE(names, QStringList({"F.Cu", "B.Cu", "Vias", "Stitching vias", "Rejected stitching vias", "Ports",
+                                     "Outline", "Top solder mask", "Mesh"}));
+        // Each layer at its height (scene mm, centred in X and Y), in its KiCad color.
+        const auto& top = scene.groups[0].triangles;
+        QCOMPARE(top.size(), std::size_t(3));
+        QCOMPARE(top[0].x, -5.0f);
+        QCOMPARE(top[0].z, 0.0f);
+        QVERIFY(std::abs(scene.groups[1].triangles[0].z + 1.51f) < 1e-6f);
+        QVERIFY(std::abs(top[0].r - 200 / 255.0f) < 1e-6f);
+        // Only the via inside the cut: its barrel, and its ring on both layers.
+        QCOMPARE(scene.groups[2].triangles.size(), std::size_t(24 * 6 * 3));
+        QVERIFY(!scene.groups[7].visibleByDefault); // the mask hides the copper until asked for
+        QVERIFY(scene.groups[7].translucent);
+        QVERIFY(std::abs(scene.groups[7].triangles[0].z - 0.01f) < 1e-6f);
+        QCOMPARE(scene.gridSummary, QString("Mesh: 5 x 5 x 4 lines, 0.00 M cells"));
+        QVERIFY(std::abs(scene.boundsMin.z() + 1.52f) < 1e-5f);
+
+        // The page loads it in the background and draws it, without opening a window.
+        kiems_gui::GeometryView view;
+        view.setAttribute(Qt::WA_DontShowOnScreen);
+        view.resize(900, 650);
+        view.show();
+        QSignalSpy loaded(&view, &kiems_gui::GeometryView::sceneLoaded);
+        view.showSimulation("Trace", path, context);
+        QVERIFY(loaded.wait(10000));
+        QVERIFY(view.scene());
+        QCOMPARE(view.findChild<QListWidget*>()->count(), 9);
+        const QImage image = view.canvas()->grabFramebuffer();
+        QVERIFY(!image.isNull());
+        // Something other than the background was drawn.
+        const QRgb background = image.pixel(2, 2);
+        bool drawn = false;
+        for (int y = 0; y < image.height() && !drawn; y += 4) {
+            for (int x = 0; x < image.width() && !drawn; x += 4) drawn = image.pixel(x, y) != background;
+        }
+        QVERIFY(drawn);
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            image.save(QDir(snapshots).filePath("geometry.png"));
+            view.grab().save(QDir(snapshots).filePath("geometry_page.png"));
+        }
     }
 
     void jobQueue() {

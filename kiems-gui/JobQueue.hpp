@@ -19,6 +19,8 @@ struct Job {
     int id = 0;
     QString simulation;
     bool storeFields = false;
+    /// Builds only the simulation's geometry (and its mesh), for the Geometry page.
+    bool geometryOnly = false;
     Status status = Status::Queued;
     QString stage;
     /// In [0, 1], or negative while the stage gives no measure of progress.
@@ -45,9 +47,10 @@ public:
     void setHooks(Hooks hooks) { _hooks = std::move(hooks); }
 
     /// Queues a run of `simulation` and starts it if nothing is running. A simulation that's
-    /// already queued isn't queued twice; asking for its fields as well upgrades the queued job.
-    /// Returns false if it was already queued or running (a running job isn't restarted).
-    bool enqueue(const QString& simulation, bool storeFields);
+    /// already queued isn't queued twice; asking for its fields as well, or for a full run where only
+    /// its geometry was queued, upgrades the queued job. Returns false if it was already queued or
+    /// running (a running job isn't restarted).
+    bool enqueue(const QString& simulation, bool storeFields, bool geometryOnly = false);
     /// Removes a queued job, or stops the running one.
     void cancel(int id);
     /// Empties the queue and stops the running job.

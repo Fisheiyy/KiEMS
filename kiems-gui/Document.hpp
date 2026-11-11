@@ -124,6 +124,8 @@ public:
     /// Pipeline output for one simulation, under the package's ems/ folder.
     QString resultsDir(int simulation) const;
     QString simulationDir(int simulation) const;
+    /// The geometry stage's output for one simulation (ems/geometry/<name>/geometry.json).
+    QString geometryFile(int simulation) const;
     bool hasGeometry(int simulation) const;
     bool hasResults(int simulation) const;
 

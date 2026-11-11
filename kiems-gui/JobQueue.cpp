@@ -46,19 +46,23 @@ bool JobQueue::contains(const QString& simulation) const {
                        [&](const Job& job) { return !job.finished() && job.simulation == simulation; });
 }
 
-bool JobQueue::enqueue(const QString& simulation, bool storeFields) {
+bool JobQueue::enqueue(const QString& simulation, bool storeFields, bool geometryOnly) {
     for (Job& job : _jobs) {
         if (job.finished() || job.simulation != simulation) continue;
-        if (job.status == Job::Status::Queued && storeFields && !job.storeFields) {
-            job.storeFields = true;
-            emit changed();
+        if (job.status == Job::Status::Queued) {
+            // A full run builds the geometry too.
+            const bool upgrade = (storeFields && !job.storeFields) || (!geometryOnly && job.geometryOnly);
+            job.storeFields = job.storeFields || storeFields;
+            job.geometryOnly = job.geometryOnly && geometryOnly;
+            if (upgrade) emit changed();
         }
         return false;
     }
     Job job;
     job.id = _nextId++;
     job.simulation = simulation;
-    job.storeFields = storeFields;
+    job.storeFields = storeFields && !geometryOnly;
+    job.geometryOnly = geometryOnly;
     _jobs.append(job);
     emit changed();
     if (!running()) startNext();

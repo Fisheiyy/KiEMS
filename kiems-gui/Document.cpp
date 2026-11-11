@@ -482,9 +482,12 @@ QString Document::simulationDir(int index) const {
     return QDir(packageDir()).filePath("ems/simulation/" + directoryName(simulationName(index)));
 }
 
+QString Document::geometryFile(int index) const {
+    return QDir(packageDir()).filePath("ems/geometry/" + directoryName(simulationName(index)) + "/geometry.json");
+}
+
 bool Document::hasGeometry(int index) const {
-    return QFileInfo::exists(
-        QDir(packageDir()).filePath("ems/geometry/" + directoryName(simulationName(index)) + "/geometry.json"));
+    return QFileInfo::exists(geometryFile(index));
 }
 
 bool Document::hasResults(int index) const {

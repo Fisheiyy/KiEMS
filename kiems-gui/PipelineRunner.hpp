@@ -21,10 +21,10 @@ public:
     static QString cliPath();
 
     /// Runs every stage for `simulation` of the document whose simulation.json is `configPath`,
-    /// importing the board from `kicadPcbPath` first. `engineArguments` choose the FDTD engine
-    /// (EngineSettings::arguments()).
+    /// importing the board from `kicadPcbPath` first -- or, with `geometryOnly`, just its geometry
+    /// and mesh. `engineArguments` choose the FDTD engine (EngineSettings::arguments()).
     bool start(const QString& configPath, const QString& kicadPcbPath, const QString& simulation,
-               const QStringList& engineArguments, QString* error);
+               const QStringList& engineArguments, QString* error, bool geometryOnly = false);
     void stop();
     bool isRunning() const;
     QString simulation() const { return _simulation; }

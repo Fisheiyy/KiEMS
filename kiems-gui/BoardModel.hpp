@@ -21,6 +21,8 @@ struct BoardData {
     std::vector<libkicad::BoardLayerInfo> layers;   // enabled layers, KiCad display order
     std::map<std::string, std::string> layerColors; // layer name -> "#RRGGBBAA"
     QStringList copperLayers;                       // F.Cu first, matching libkiems' metal indices
+    std::vector<libkicad::StackupLayer> stackup;    // top to bottom, as KiCad's Board Stackup lists it
+    std::vector<libkicad::ThroughHole> throughHoles; // vias and plated pad holes
     libkicad::BoardGeometry geometry;
     std::vector<libkicad::FootprintInfo> footprints;
     std::vector<libkicad::PadPosition> pads;
