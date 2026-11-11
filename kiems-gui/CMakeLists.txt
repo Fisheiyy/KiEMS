@@ -10,6 +10,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     main.cpp
     BoardModel.cpp
     BoardModel.hpp
+    BoardSetupPanel.cpp
+    BoardSetupPanel.hpp
     BoardView.cpp
     BoardView.hpp
     Document.cpp
@@ -79,6 +81,8 @@ if(TARGET Qt6::Test)
         tests/kiems_gui_tests.cpp
         BoardModel.cpp
         BoardModel.hpp
+        BoardSetupPanel.cpp
+        BoardSetupPanel.hpp
         Document.cpp
         Document.hpp
         EyeTestPresets.cpp

@@ -92,6 +92,16 @@ public:
     double componentHullPadding(const QString& reference) const;
     void setComponentHullPadding(const QString& reference, double micrometres);
 
+    /// Gives a simulation just created what Board Setup says new simulations start with: its ground
+    /// (when one is chosen), its edge-terminated nets, and its included nets and net classes
+    /// (geometry only, with Board Setup's impedances) and components -- the macOS app's
+    /// applyBoardInclusions().
+    void applyBoardSetup();
+
+    // --- Board Setup, the document's board-wide defaults
+    static kiems::BoardSetupConfig boardSetup(const Document& document);
+    static void setBoardSetup(Document& document, const kiems::BoardSetupConfig& setup);
+
     /// Brings an existing simulation to the state it would have reached had it been a differential
     /// pair all along: each net's partner included at the same level, the pair marked, and pin
     /// choices and excitations mirrored. Run when the Differential pair box is ticked.

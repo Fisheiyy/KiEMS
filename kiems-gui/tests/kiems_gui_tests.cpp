@@ -1,6 +1,7 @@
 // Tests for the GUI's editing logic -- the unit-aware fields, the document's settings accessors and
 // the Tests tab's presets -- driven through the widgets' own signals, without showing a window.
 // Every document edited here is also run through libkiems' own parser (Document::validate()).
+#include "BoardSetupPanel.hpp"
 #include "Document.hpp"
 #include "EyeTestPresets.hpp"
 #include "EyeView.hpp"
@@ -13,6 +14,9 @@
 #include "kiems/excitation_postprocess.hpp"
 
 #include <QAction>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -443,6 +447,101 @@ private slots:
         QVERIFY(noise && !noise->isMain());
         QCOMPARE(*noise->frequency(), 300e6);
         QCOMPARE(*noise->amplitude(), 0.5);
+        QCOMPARE(document.validate(), QString());
+    }
+
+    void boardSetupPanel() {
+        Document document;
+        QVERIFY(makeDocument(document));
+        const auto board = fakeBoard();
+        kiems_gui::BoardSetupPanel panel(&document);
+        panel.setBoard(board);
+        auto setup = [&] { return SimulationEditor::boardSetup(document); };
+        auto field = [&](const QString& toolTipStart) -> QuantityEdit* {
+            for (QuantityEdit* edit : fields(&panel)) {
+                if (edit->toolTip().startsWith(toolTipStart)) return edit;
+            }
+            return nullptr;
+        };
+
+        // Board-wide defaults.
+        QuantityEdit* signal = field("The impedance a signal net");
+        QuantityEdit* bitRate = field("The bit rate new");
+        QuantityEdit* usb = field("The impedance of the USB class");
+        QVERIFY(signal && bitRate && usb);
+        type(signal, "50");
+        QCOMPARE(setup().signalImpedance(), 50.0);
+        type(bitRate, "480 Mb/s");
+        QCOMPARE(setup().bitRate(), 480e6);
+        type(bitRate, "");
+        QCOMPARE(setup().bitRate(), 0.0);
+        type(usb, "90");
+        QCOMPARE(*setup().netClassImpedance("USB"), 90.0);
+        auto* ground = panel.findChild<QComboBox*>("boardGround");
+        QVERIFY(ground);
+        const int gnd = ground->findText("GND");
+        QVERIFY(gnd > 0);
+        ground->setCurrentIndex(gnd);
+        emit ground->activated(gnd);
+        QVERIFY(setup().groundName() == "GND");
+        QVERIFY(setup().groundKind() == kiems::GroundSelectorKind::Net);
+
+        // A picked input pin absorbs by default; unticking records the choice, ticking again
+        // hands it back to the rule and leaves no entry behind.
+        panel.setPick({"SIG", "F.Cu", "U2", "1"});
+        auto* absorbing = panel.findChild<QCheckBox*>("boardPinAbsorbing");
+        auto* noise = panel.findChild<QCheckBox*>("boardPinNoise");
+        QVERIFY(absorbing && noise);
+        QVERIFY(absorbing->isChecked());
+        absorbing->click();
+        QVERIFY(setup().pin("U2", "1")->absorbing == std::optional(false));
+        absorbing->click();
+        QVERIFY(setup().pin("U2", "1") == nullptr);
+        noise->click();
+        QVERIFY(setup().pin("U2", "1")->noiseGenerating);
+        QCOMPARE(setup().pin("U2", "1")->noiseFrequency, 100e6);
+
+        // The picked net: included, then edge terminated; leaving it out drops the termination.
+        auto* included = panel.findChild<QCheckBox*>("boardNetIncluded");
+        auto* terminated = panel.findChild<QCheckBox*>("boardNetTerminated");
+        QVERIFY(included && terminated);
+        QVERIFY(!terminated->isEnabled());
+        included->click();
+        QVERIFY(terminated->isEnabled());
+        terminated->click();
+        QVERIFY(setup().edgeTerminatedNets() == std::vector<std::string>{"SIG"});
+        QCOMPARE(panel.findChild<QListWidget*>("boardEdgeNets")->count(), 1);
+        included->click();
+        QVERIFY(setup().includedNets().empty() && setup().edgeTerminatedNets().empty());
+        included->click();
+        terminated->click();
+
+        // A net in a class, and a passive part.
+        panel.setPick({"USB_P", "F.Cu", "", ""});
+        panel.findChild<QCheckBox*>("boardNetClassIncluded")->click();
+        QVERIFY(setup().includedNetClasses() == std::vector<std::string>{"USB"});
+        panel.setPick({"SIG", "F.Cu", "R1", "1"});
+        panel.findChild<QCheckBox*>("boardComponentIncluded")->click();
+        QVERIFY(setup().includedComponents() == std::vector<std::string>{"R1"});
+
+        // A new simulation starts from all of it.
+        const int sim = document.addSimulation("New", "SIG");
+        SimulationEditor editor(document, board.get(), sim);
+        editor.applyBoardSetup();
+        const nlohmann::json& json = *document.simulationJson(sim);
+        QVERIFY(json["ground_net"] == nlohmann::json({{"net", "GND"}}));
+        QVERIFY(json["edge_terminated_nets"] == nlohmann::json::array({"SIG"}));
+        QCOMPARE(editor.netLevel("SIG"), NetLevel::GeometryOnly);
+        QCOMPARE(editor.netImpedance("SIG"), 50.0);
+        bool usbClass = false;
+        for (const auto& entry : json["involved_nets"]) {
+            if (entry.value("net_class", std::string()) == "USB") {
+                usbClass = true;
+                QCOMPARE(entry["impedance"].get<double>(), 90.0);
+            }
+        }
+        QVERIFY(usbClass);
+        QVERIFY(editor.componentIncluded("R1"));
         QCOMPARE(document.validate(), QString());
     }
 

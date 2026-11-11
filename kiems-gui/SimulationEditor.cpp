@@ -183,12 +183,76 @@ bool SimulationEditor::absorbsByDefault(const QString& footprint, const QString&
 }
 
 kiems::BoardSetupConfig SimulationEditor::boardSetup() const {
-    const Json value = _document.documentValue("/board_setup");
+    return boardSetup(_document);
+}
+
+kiems::BoardSetupConfig SimulationEditor::boardSetup(const Document& document) {
+    const Json value = document.documentValue("/board_setup");
     if (!value.is_object()) return {};
     try {
         return value.get<kiems::BoardSetupConfig>();
     } catch (const std::exception&) {
         return {};
+    }
+}
+
+void SimulationEditor::setBoardSetup(Document& document, const kiems::BoardSetupConfig& setup) {
+    kiems::BoardSetupConfig pruned = setup;
+    pruned.pruneEmptyPins();
+    document.setDocumentValue("/board_setup", Json(pruned));
+}
+
+void SimulationEditor::applyBoardSetup() {
+    if (!isValid()) return;
+    const kiems::BoardSetupConfig setup = boardSetup();
+    _document.editSimulation(_simulation, [&](Json& sim) {
+        if (!setup.groundName().empty()) {
+            const char* key = setup.groundKind() == kiems::GroundSelectorKind::NetClass ? "net_class" : "net";
+            sim["ground_net"] = Json{{key, setup.groundName()}};
+        }
+        // "" is a Board Setup row with no net chosen yet.
+        Json terminated = Json::array();
+        for (const std::string& net : setup.edgeTerminatedNets()) {
+            if (!net.empty()) terminated.push_back(net);
+        }
+        if (!terminated.empty()) sim["edge_terminated_nets"] = std::move(terminated);
+    });
+    for (const std::string& net : setup.includedNets()) {
+        if (!net.empty()) setNetIncluded(qstr(net), true);
+    }
+    if (std::any_of(setup.includedNetClasses().begin(), setup.includedNetClasses().end(),
+                    [](const std::string& name) { return !name.empty(); })) {
+        editNets([&](Json&, std::vector<kiems::InvolvedNetConfig>& entries) {
+            for (const std::string& netClass : setup.includedNetClasses()) {
+                if (netClass.empty() || std::any_of(entries.begin(), entries.end(), [&](const auto& entry) {
+                        return entry.kind() == kiems::NetSelectorKind::NetClass && entry.netClass() == netClass;
+                    })) {
+                    continue;
+                }
+                kiems::InvolvedNetConfig entry;
+                entry.setKind(kiems::NetSelectorKind::NetClass);
+                entry.setNetClass(netClass);
+                entry.setInclusionLevel(kiems::NetInclusionLevel::GeometryOnly);
+                entry.setImpedance(setup.netClassImpedance(netClass).value_or(setup.signalImpedance()));
+                // The class's pins take their own Board Setup impedances and terminations too.
+                if (_board) {
+                    for (const libkicad::FootprintInfo& info : _board->footprints) {
+                        for (const libkicad::FootprintPin& pin : info.pins) {
+                            const auto it = _board->netClasses.find(pin.netName);
+                            if (it == _board->netClasses.end() || it->second != netClass) continue;
+                            const kiems::BoardPinSetup* pinSetup = setup.pin(info.reference, pin.number);
+                            if (!pinSetup) continue;
+                            if (pinSetup->impedance) entry.setPinImpedance(info.reference, pin.number, pinSetup->impedance);
+                            if (pinSetup->absorbing) entry.setPinAbsorbOnly(info.reference, pin.number, *pinSetup->absorbing);
+                        }
+                    }
+                }
+                entries.push_back(std::move(entry));
+            }
+        });
+    }
+    for (const std::string& reference : setup.includedComponents()) {
+        if (!reference.empty()) setComponentIncluded(qstr(reference), true);
     }
 }
 

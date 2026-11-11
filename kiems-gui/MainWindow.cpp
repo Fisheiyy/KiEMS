@@ -4,6 +4,7 @@
 #include "FieldViewer.hpp"
 #include "Inspector.hpp"
 #include "ResultsView.hpp"
+#include "SimulationEditor.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -390,6 +391,8 @@ void MainWindow::addSimulation() {
         }
     }
     const int index = _document.addSimulation(_document.uniqueSimulationName(name), ground);
+    // Board Setup's ground, when chosen, replaces the guess above.
+    SimulationEditor(_document, _boardModel.data().get(), index).applyBoardSetup();
     showPage(index, Page::Board);
 }
 

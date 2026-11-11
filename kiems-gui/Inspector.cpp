@@ -1,5 +1,6 @@
 #include "Inspector.hpp"
 
+#include "BoardSetupPanel.hpp"
 #include "QuantityEdit.hpp"
 #include "SelectionPanel.hpp"
 #include "SettingsPanel.hpp"
@@ -144,9 +145,12 @@ Inspector::Inspector(Document* document, QWidget* parent) : QWidget(parent), _do
     _selection = new SelectionPanel(document);
     _settings = new SettingsPanel(document);
     _tests = new TestsPanel(document);
+    _boardSetup = new BoardSetupPanel(document);
     _selectionPage = scrolling(page(_selection));
+    _boardSetupPage = scrolling(page(_boardSetup));
     _tabs->addTab(scrolling(page(_simulationGroup)), tr("Simulation"));
     _tabs->addTab(_selectionPage, tr("Selection"));
+    _tabs->addTab(_boardSetupPage, tr("Board Setup"));
     _tabs->addTab(scrolling(page(_settings)), tr("Settings"));
     _tabs->addTab(scrolling(page(_tests)), tr("Tests"));
 
@@ -224,6 +228,7 @@ Inspector::Inspector(Document* document, QWidget* parent) : QWidget(parent), _do
 void Inspector::setBoard(std::shared_ptr<const BoardData> board) {
     _board = std::move(board);
     _selection->setBoard(_board);
+    _boardSetup->setBoard(_board);
     populateBoardLists();
     refresh();
 }
@@ -238,7 +243,10 @@ void Inspector::setSimulation(int simulation) {
 
 void Inspector::setPick(const BoardPick& pick) {
     _selection->setPick(pick);
-    if (!pick.net.isEmpty() || !pick.footprint.isEmpty()) _tabs->setCurrentWidget(_selectionPage);
+    _boardSetup->setPick(pick);
+    // A pick shows in Board Setup while that's open, otherwise in Selection.
+    const bool picked = !pick.net.isEmpty() || !pick.footprint.isEmpty();
+    if (picked && _tabs->currentWidget() != _boardSetupPage) _tabs->setCurrentWidget(_selectionPage);
 }
 
 void Inspector::populateBoardLists() {

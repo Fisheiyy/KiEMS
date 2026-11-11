@@ -2,6 +2,8 @@
 //  - Simulation: the selected simulation's networks -- name, ground net, reference plane, its
 //    excitations, involved and edge-terminated nets.
 //  - Selection: whatever was picked on the board, and how the simulation uses it (SelectionPanel).
+//  - Board Setup: the board-wide defaults new simulations and newly included nets take, and a
+//    picked pin's, net's or part's own (BoardSetupPanel).
 //  - Settings: its geometry and resolution settings (SettingsPanel).
 //  - Tests: its eye test (TestsPanel).
 #pragma once
@@ -24,6 +26,7 @@ class QTabWidget;
 
 namespace kiems_gui {
 
+class BoardSetupPanel;
 class SelectionPanel;
 class SettingsPanel;
 class TestsPanel;
@@ -36,7 +39,8 @@ public:
 
     void setBoard(std::shared_ptr<const BoardData> board);
     void setSimulation(int simulation);
-    /// Shows `pick` in the Selection tab, switching to it when something was picked.
+    /// Shows `pick` in the Selection and Board Setup tabs, switching to Selection when something was
+    /// picked unless Board Setup is open.
     void setPick(const BoardPick& pick);
     /// Re-reads everything from the document.
     void refresh();
@@ -52,6 +56,8 @@ private:
     QTabWidget* _tabs;
     QWidget* _selectionPage;
     SelectionPanel* _selection;
+    QWidget* _boardSetupPage;
+    BoardSetupPanel* _boardSetup;
     SettingsPanel* _settings;
     TestsPanel* _tests;
 
