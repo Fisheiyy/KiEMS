@@ -1080,6 +1080,19 @@ private slots:
             view.show();
             view.grab().save(QDir(snapshots).filePath("power.png"));
         }
+
+        // The report runs it again on the board, and fails it for the limits it breaks.
+        QCOMPARE(kiems_gui::judgePowerAnalysis(nullptr).kind, kiems_gui::SimulationVerdict::Kind::NotRun);
+        QVERIFY(kiems_gui::judgePowerAnalysis(limited.get()).kind == kiems_gui::SimulationVerdict::Kind::Fail);
+        QVERIFY(kiems_gui::judgePowerAnalysis(run.get()).kind == kiems_gui::SimulationVerdict::Kind::Pass);
+        const QString pdf = _directory.filePath("power_report.pdf");
+        QString reportError;
+        QVERIFY2(kiems_gui::writeReport(document, pdf, &reportError, board.get()), qPrintable(reportError));
+        QVERIFY(QFileInfo(pdf).size() > 10000);
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            QFile::remove(QDir(snapshots).filePath("power_report.pdf"));
+            QFile::copy(pdf, QDir(snapshots).filePath("power_report.pdf"));
+        }
     }
 
     void jobQueue() {

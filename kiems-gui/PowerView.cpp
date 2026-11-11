@@ -163,8 +163,14 @@ QRectF PowerCanvas::mapArea() const {
 void PowerCanvas::fit() {
     if (!_run || !_run->ok()) return;
     double xMin = std::numeric_limits<double>::infinity(), xMax = -xMin, yMin = xMin, yMax = -xMin;
-    // The rail's extent, so switching between it and its return keeps the view.
-    for (const auto& layer : _run->result.layers) {
+    // The rail and its return together, so switching between them keeps the view.
+    std::vector<const kiems::dc::LayerResult*> layers;
+    for (const auto& layer : _run->result.layers) layers.push_back(&layer);
+    if (_run->returnResult) {
+        for (const auto& layer : _run->returnResult->layers) layers.push_back(&layer);
+    }
+    for (const kiems::dc::LayerResult* layerPointer : layers) {
+        const auto& layer = *layerPointer;
         for (const Cu::Position& p : layer.nodes) {
             xMin = std::min(xMin, p.x());
             xMax = std::max(xMax, p.x());
@@ -284,7 +290,18 @@ void PowerCanvas::paintEvent(QPaintEvent*) {
         painter.setBrush(source ? QColor(60, 200, 90) : QColor(255, 140, 30));
         painter.drawRect(QRectF(at - QPointF(5, 5), QSizeF(10, 10)));
         painter.setPen(Qt::white);
-        painter.drawText(at + QPointF(8, -6), QString::fromStdString(terminal.name));
+        // Beside the marker, on whichever side has room.
+        const QString name = QString::fromStdString(terminal.name);
+        const double textWidth = painter.fontMetrics().horizontalAdvance(name);
+        const bool left = at.x() + 8 + textWidth > mapArea().right();
+        // A dark outline keeps it readable over the palest colours.
+        const QPointF textAt = at + QPointF(left ? -8 - textWidth : 8, -6);
+        painter.setPen(QColor(0, 0, 0, 200));
+        for (const QPointF& offset : {QPointF(-1, 0), QPointF(1, 0), QPointF(0, -1), QPointF(0, 1)}) {
+            painter.drawText(textAt + offset, name);
+        }
+        painter.setPen(Qt::white);
+        painter.drawText(textAt, name);
     }
     if (_mark) {
         const QPointF at = toScreen(_mark->x(), _mark->y());

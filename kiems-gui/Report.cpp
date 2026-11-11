@@ -2,6 +2,8 @@
 
 #include "Document.hpp"
 #include "EyeView.hpp"
+#include "PowerAnalysis.hpp"
+#include "PowerView.hpp"
 #include "ResultsView.hpp"
 
 #include <QChart>
@@ -18,6 +20,9 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -184,7 +189,36 @@ struct Entry {
     bool haveResults = false;
 };
 
-void addSummary(Pages& pages, const Document& document, const std::vector<Entry>& entries) {
+/// One summary row: the verdict, the name, and why, lined up after the verdict.
+void addVerdictRow(Pages& pages, const QString& name, const SimulationVerdict& verdict) {
+    constexpr double badgeWidth = 92;
+    Block row;
+    row.spaceBefore = 12;
+    row.spacing = 3;
+    const QString badge = verdictTitle(verdict.kind);
+    const QColor color = verdictColor(verdict.kind);
+    Part title = pages.text(name, font(12, QFont::DemiBold), kInk, badgeWidth);
+    const auto drawTitle = title.draw;
+    title.draw = [=](QPainter& painter, const QRectF& rect) {
+        painter.setFont(font(10, QFont::Bold));
+        painter.setPen(color);
+        painter.drawText(QRectF(rect.left(), rect.top(), badgeWidth, rect.height()), Qt::AlignLeft | Qt::AlignVCenter, badge);
+        drawTitle(painter, rect);
+    };
+    row.parts.push_back(title);
+    for (const QString& note : verdict.notes) row.parts.push_back(pages.text(note, font(9), kSecondary, badgeWidth));
+    pages.add(row);
+}
+
+struct PowerEntry {
+    QString name;
+    QString net;
+    std::shared_ptr<const PowerRun> run;
+    SimulationVerdict verdict;
+};
+
+void addSummary(Pages& pages, const Document& document, const std::vector<Entry>& entries,
+                const std::vector<PowerEntry>& power) {
     Block title;
     title.parts.push_back(pages.text(QObject::tr("KiEMS Report"), font(26, QFont::Bold), kInk));
     title.parts.push_back(pages.text(document.displayName(), font(15, QFont::DemiBold), kInk));
@@ -204,25 +238,123 @@ void addSummary(Pages& pages, const Document& document, const std::vector<Entry>
         pages.add(none);
     }
 
-    // A row per simulation: its verdict, its name, and why, lined up after the verdict.
-    constexpr double badgeWidth = 92;
-    for (const Entry& entry : entries) {
-        Block row;
-        row.spaceBefore = 12;
-        row.spacing = 3;
-        const QString badge = verdictTitle(entry.verdict.kind);
-        const QColor color = verdictColor(entry.verdict.kind);
-        Part name = pages.text(entry.name, font(12, QFont::DemiBold), kInk, badgeWidth);
-        const auto drawName = name.draw;
-        name.draw = [=](QPainter& painter, const QRectF& rect) {
-            painter.setFont(font(10, QFont::Bold));
-            painter.setPen(color);
-            painter.drawText(QRectF(rect.left(), rect.top(), badgeWidth, rect.height()), Qt::AlignLeft | Qt::AlignVCenter, badge);
-            drawName(painter, rect);
-        };
-        row.parts.push_back(name);
-        for (const QString& note : entry.verdict.notes) row.parts.push_back(pages.text(note, font(9), kSecondary, badgeWidth));
-        pages.add(row);
+    for (const Entry& entry : entries) addVerdictRow(pages, entry.name, entry.verdict);
+
+    if (power.empty()) return;
+    Block powerHeading;
+    powerHeading.spaceBefore = 26;
+    powerHeading.parts.push_back(pages.text(QObject::tr("DC Power Analyses"), font(15, QFont::DemiBold), kInk));
+    pages.add(powerHeading);
+    for (const PowerEntry& entry : power) addVerdictRow(pages, entry.name, entry.verdict);
+}
+
+/// Rows of text in columns: the first row a header.
+Part table(Pages& pages, const std::vector<QStringList>& rows, const std::vector<double>& widths) {
+    const QFont body = font(8.5);
+    const QFont header = font(8.5, QFont::DemiBold);
+    const double rowHeight = QFontMetricsF(body, pages.device()).height() + 3;
+    return {rowHeight * static_cast<double>(rows.size()), [=](QPainter& painter, const QRectF& rect) {
+                double y = rect.top();
+                for (std::size_t r = 0; r < rows.size(); ++r) {
+                    painter.setFont(r == 0 ? header : body);
+                    painter.setPen(r == 0 ? kInk : kSecondary);
+                    double x = rect.left();
+                    for (int c = 0; c < rows[r].size() && c < static_cast<int>(widths.size()); ++c) {
+                        painter.drawText(QRectF(x, y, widths[static_cast<std::size_t>(c)] - 4, rowHeight),
+                                         Qt::AlignLeft | Qt::AlignVCenter, rows[r][c]);
+                        x += widths[static_cast<std::size_t>(c)];
+                    }
+                    y += rowHeight;
+                }
+            }};
+}
+
+void addPowerAnalysis(Pages& pages, const PowerEntry& entry) {
+    Block heading;
+    heading.startsPage = true;
+    heading.spacing = 6;
+    heading.parts.push_back(pages.text(QObject::tr("DC Power Analysis"), font(13, QFont::DemiBold), kSecondary));
+    heading.parts.push_back(pages.text(entry.name, font(28, QFont::Bold), kInk));
+    heading.parts.push_back(pages.text(verdictTitle(entry.verdict.kind), font(13, QFont::Bold), verdictColor(entry.verdict.kind)));
+    for (const QString& note : entry.verdict.notes) heading.parts.push_back(pages.text(note, font(9.5), kSecondary));
+    pages.add(heading);
+    const PowerRun* run = entry.run.get();
+    if (!run || !run->ok()) return;
+
+    // The pins: each load's voltage, and across its part when the return was solved.
+    const std::map<std::string, double> grounds =
+        run->returnResult ? kiems::dc::partVoltages(*run->returnResult) : std::map<std::string, double>();
+    std::vector<QStringList> rows{{QObject::tr("Pin"), QObject::tr("Role"), QObject::tr("Voltage"), QObject::tr("Ground"),
+                                   QObject::tr("Across"), QObject::tr("Current")}};
+    for (const auto& terminal : run->result.terminals) {
+        const bool source = terminal.kind == kiems::dc::Terminal::Kind::Source;
+        const auto ground = grounds.find(terminal.name.substr(0, terminal.name.find(" pin ")));
+        const bool haveGround = terminal.connected && ground != grounds.end();
+        rows.push_back({QString::fromStdString(terminal.name), source ? QObject::tr("Source") : QObject::tr("Load"),
+                        terminal.connected ? QString("%1 V").arg(terminal.voltage, 0, 'f', 4) : QObject::tr("not connected"),
+                        haveGround ? QString("%1 mV").arg(ground->second * 1e3, 0, 'f', 2) : QString(),
+                        haveGround ? QString("%1 V").arg(terminal.voltage - ground->second, 0, 'f', 4) : QString(),
+                        QString("%1 A").arg(terminal.current, 0, 'g', 4)});
+    }
+    Block pins;
+    pins.spaceBefore = 22;
+    pins.parts.push_back(pages.text(QObject::tr("Pins"), font(15, QFont::DemiBold), kInk));
+    const double w = pages.width();
+    pins.parts.push_back(table(pages, rows, {w * 0.26, w * 0.16, w * 0.15, w * 0.13, w * 0.15, w * 0.15}));
+    pages.add(pins);
+
+    // The busiest vias.
+    std::vector<const kiems::dc::BarrelResult*> vias;
+    for (const auto& barrel : run->result.barrels) {
+        if (barrel.connected && barrel.current > 1e-6) vias.push_back(&barrel);
+    }
+    std::sort(vias.begin(), vias.end(), [](const auto* a, const auto* b) { return a->current > b->current; });
+    if (!vias.empty()) {
+        std::vector<QStringList> viaRows{{QObject::tr("Via"), QObject::tr("Current"), QObject::tr("Resistance")}};
+        for (std::size_t i = 0; i < std::min<std::size_t>(vias.size(), 12); ++i) {
+            viaRows.push_back({QString::fromStdString(vias[i]->name), QString("%1 A").arg(vias[i]->current, 0, 'g', 4),
+                               QString("%1 m\u03A9").arg(vias[i]->resistance * 1e3, 0, 'f', 3)});
+        }
+        Block block;
+        block.spaceBefore = 18;
+        block.parts.push_back(pages.text(QObject::tr("Busiest vias"), font(12, QFont::DemiBold), kInk));
+        block.parts.push_back(table(pages, viaRows, {w * 0.5, w * 0.25, w * 0.25}));
+        pages.add(block);
+    }
+
+    // The maps: the rail's voltage and current density on each layer, then its return's density.
+    std::vector<std::unique_ptr<QWidget>> widgets;
+    const auto addMap = [&](const QString& title, int layer, bool onReturn, PowerCanvas::Quantity quantity) {
+        auto canvas = std::make_unique<PowerCanvas>();
+        const double height = 330;
+        canvas->setAttribute(Qt::WA_DontShowOnScreen);
+        canvas->resize(static_cast<int>(pages.width()), static_cast<int>(height));
+        canvas->setQuantity(quantity);
+        canvas->setRun(entry.run, false);
+        canvas->setLayer(layer, onReturn);
+        canvas->fit();
+        Block block;
+        block.spaceBefore = 18;
+        block.parts.push_back(pages.text(title, font(12, QFont::DemiBold), kInk));
+        block.parts.push_back(pages.widget(canvas.get(), height));
+        pages.add(block);
+        widgets.push_back(std::move(canvas));
+    };
+    for (int l = 0; l < static_cast<int>(run->result.layers.size()); ++l) {
+        const auto& layer = run->result.layers[static_cast<std::size_t>(l)];
+        if (layer.triangles.empty()) continue;
+        const QString name = QString::fromStdString(layer.name);
+        addMap(QObject::tr("%1: voltage").arg(name), l, false, PowerCanvas::Quantity::Voltage);
+        addMap(QObject::tr("%1: current density").arg(name), l, false, PowerCanvas::Quantity::CurrentDensity);
+    }
+    if (run->returnResult) {
+        for (int l = 0; l < static_cast<int>(run->returnResult->layers.size()); ++l) {
+            const auto& layer = run->returnResult->layers[static_cast<std::size_t>(l)];
+            if (layer.triangles.empty()) continue;
+            addMap(QObject::tr("Return on %1, %2: current density")
+                       .arg(QString::fromStdString(run->analysis.referenceNet), QString::fromStdString(layer.name)),
+                   l, true, PowerCanvas::Quantity::CurrentDensity);
+        }
     }
 }
 
@@ -369,7 +501,44 @@ SimulationVerdict judgeSimulation(bool haveResults, const EyeResults& eyes) {
     return {SimulationVerdict::Kind::Pass, passes};
 }
 
-bool writeReport(const Document& document, const QString& pdfPath, QString* error) {
+SimulationVerdict judgePowerAnalysis(const PowerRun* run) {
+    if (!run) return {SimulationVerdict::Kind::NotRun, {QObject::tr("The board wasn't loaded to run it on.")}};
+    if (!run->ok()) return {SimulationVerdict::Kind::Fail, {QObject::tr("It couldn't run: %1").arg(run->error)}};
+    QStringList notes;
+    for (const auto& violation : run->violations) notes << QString::fromStdString(violation.message);
+    if (!notes.isEmpty()) return {SimulationVerdict::Kind::Fail, notes};
+    QStringList warnings;
+    for (const auto& warning : run->result.warnings) warnings << QString::fromStdString(warning);
+    for (const auto& note : run->notes) warnings << QString::fromStdString(note);
+    if (!warnings.isEmpty()) return {SimulationVerdict::Kind::Warning, warnings};
+    // What it found, briefly.
+    double lowest = std::numeric_limits<double>::infinity();
+    QString lowestName;
+    const std::map<std::string, double> grounds =
+        run->returnResult ? kiems::dc::partVoltages(*run->returnResult) : std::map<std::string, double>();
+    for (const auto& terminal : run->result.terminals) {
+        if (terminal.kind != kiems::dc::Terminal::Kind::Load || !terminal.connected) continue;
+        const auto ground = grounds.find(terminal.name.substr(0, terminal.name.find(" pin ")));
+        const double v = terminal.voltage - (ground != grounds.end() ? ground->second : 0.0);
+        if (v < lowest) {
+            lowest = v;
+            lowestName = QString::fromStdString(terminal.name);
+        }
+    }
+    double density = 0, via = 0;
+    for (const auto& layer : run->result.layers) density = std::max(density, layer.maxCurrentDensity);
+    for (const auto& barrel : run->result.barrels) via = std::max(via, barrel.current);
+    if (std::isfinite(lowest)) {
+        notes << QObject::tr("Lowest load: %1 at %2 V%3.")
+                     .arg(lowestName)
+                     .arg(lowest, 0, 'f', 4)
+                     .arg(run->returnResult ? QObject::tr(" across its part") : QString());
+    }
+    notes << QObject::tr("Up to %1 A/mm\u00B2 in the copper and %2 A through a via.").arg(density, 0, 'g', 3).arg(via, 0, 'g', 3);
+    return {SimulationVerdict::Kind::Pass, notes};
+}
+
+bool writeReport(const Document& document, const QString& pdfPath, QString* error, const BoardData* board) {
     std::vector<Entry> entries;
     for (int i = 0; i < document.simulationCount(); ++i) {
         // A Simulation Set's template never runs; the simulations it generated are reported.
@@ -381,6 +550,16 @@ bool writeReport(const Document& document, const QString& pdfPath, QString* erro
         if (entry.haveResults) entry.eyes = EyeResults::load(document.resultsDir(i));
         entry.verdict = judgeSimulation(entry.haveResults, entry.eyes);
         entries.push_back(std::move(entry));
+    }
+    // Power analyses run afresh: a run takes a fraction of a second, and none is kept on disk.
+    std::vector<PowerEntry> power;
+    for (const kiems::dc::AnalysisConfig& analysis : powerAnalyses(document)) {
+        PowerEntry entry;
+        entry.name = QString::fromStdString(analysis.name);
+        entry.net = QString::fromStdString(analysis.net);
+        if (board) entry.run = runPowerAnalysis(*board, analysis);
+        entry.verdict = judgePowerAnalysis(entry.run.get());
+        power.push_back(std::move(entry));
     }
 
     QPdfWriter writer(pdfPath);
@@ -395,8 +574,9 @@ bool writeReport(const Document& document, const QString& pdfPath, QString* erro
         if (error) *error = QObject::tr("The report couldn't be written to %1.").arg(pdfPath);
         return false;
     }
-    addSummary(pages, document, entries);
+    addSummary(pages, document, entries, power);
     for (const Entry& entry : entries) addSimulation(pages, entry);
+    for (const PowerEntry& entry : power) addPowerAnalysis(pages, entry);
     pages.finish();
     return true;
 }

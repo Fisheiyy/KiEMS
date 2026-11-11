@@ -444,7 +444,7 @@ void MainWindow::saveReport() {
     _statusLabel->setText(tr("Writing the report..."));
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QString error;
-    const bool written = writeReport(_document, path, &error);
+    const bool written = writeReport(_document, path, &error, _boardModel.data().get());
     QApplication::restoreOverrideCursor();
     if (!written) {
         _statusLabel->clear();

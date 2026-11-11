@@ -1,6 +1,8 @@
 // File > Save Report's PDF, as the macOS app's ResultsReport makes it: a summary page with every
 // simulation's verdict and why, then each simulation's pages -- its eye diagrams with their masks,
-// then every chart its Results view shows (makeResultsCategories), in print colours. Headings,
+// then every chart its Results view shows (makeResultsCategories), in print colours. DC power
+// analyses follow, run afresh on the loaded board: their verdicts on the summary page, then each
+// one's pins, problems and voltage and current density maps. Headings,
 // notes and charts are laid out as blocks down Letter pages, a block that doesn't fit starting
 // the next page.
 #pragma once
@@ -11,7 +13,9 @@
 namespace kiems_gui {
 
 class Document;
+struct BoardData;
 struct EyeResults;
+struct PowerRun;
 
 struct SimulationVerdict {
     enum class Kind { Pass, Fail, Warning, NotRun };
@@ -27,7 +31,12 @@ QString verdictTitle(SimulationVerdict::Kind kind);
 /// there's nothing to judge against or an adversarial result hasn't settled; PASS otherwise.
 SimulationVerdict judgeSimulation(bool haveResults, const EyeResults& eyes);
 
-/// Writes the report on every simulation in `document` to `pdfPath`.
-bool writeReport(const Document& document, const QString& pdfPath, QString* error);
+/// PASS when no limit is broken; FAIL when one is, or the analysis couldn't run; WARNING when
+/// copper or pins weren't connected; NOT RUN without a run (no board to run it on).
+SimulationVerdict judgePowerAnalysis(const PowerRun* run);
+
+/// Writes the report on every simulation in `document` to `pdfPath`, and, given the board, on its
+/// DC power analyses.
+bool writeReport(const Document& document, const QString& pdfPath, QString* error, const BoardData* board = nullptr);
 
 } // namespace kiems_gui

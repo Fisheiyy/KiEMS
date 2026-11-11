@@ -274,8 +274,9 @@ as `Current` could be read later, through the netlist path that the simulation m
 3. *(Done.)* GUI (`kiems-gui` PowerView):
    - Power page setup with automatic definition from pin types;
    - heatmap, probes and violation list.
-   The page is its own map rather than an overlay on the Board page. It doesn't yet pick pins
-   on the board or add a page to the PDF report.
+   The page is its own map rather than an overlay on the Board page. File › Save Report runs
+   each analysis again on the loaded board and reports its verdict, pins, busiest vias and maps.
+   It doesn't yet pick pins on the board.
 4. Series parts and VRMs, so multi-rail trees work; then the equipotential-package load model;
    then remote sense.
 5. Later: electro-thermal coupling. AC PDN impedance is a separate problem, closer to the
