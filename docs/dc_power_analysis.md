@@ -276,7 +276,8 @@ as `Current` could be read later, through the netlist path that the simulation m
    - heatmap, probes and violation list.
    The page is its own map rather than an overlay on the Board page. File › Save Report runs
    each analysis again on the loaded board and reports its verdict, pins, busiest vias and maps.
-   It doesn't yet pick pins on the board.
+   Before a run the map shows the rail's copper from the board; a click on one of its pads makes
+   the pin a source or a load, or takes it out.
 4. Series parts and VRMs, so multi-rail trees work; then the equipotential-package load model;
    then remote sense.
 5. Later: electro-thermal coupling. AC PDN impedance is a separate problem, closer to the

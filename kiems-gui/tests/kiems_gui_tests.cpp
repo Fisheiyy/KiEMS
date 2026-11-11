@@ -1068,6 +1068,27 @@ private slots:
         view.setBoard(board);
         view.showAnalysis(0);
         QVERIFY(view.canRun());
+        // Picking pins on the map: J1 pin 1 is already a load; U1 pin 1 a source.
+        const auto config = [&] { return *kiems_gui::powerAnalysis(document, 0); };
+        view.setPinRole("J1", "1", kiems_gui::PowerCanvas::Role::Load); // no change
+        QCOMPARE(config().loads.size(), std::size_t(1));
+        QCOMPARE(config().loads[0].value, 2.0);
+        view.setPinRole("J1", "1", kiems_gui::PowerCanvas::Role::None);
+        QVERIFY(config().loads.empty());
+        view.setPinRole("J1", "1", kiems_gui::PowerCanvas::Role::Load);
+        QCOMPARE(config().loads[0].value, 0.1); // a new load's default
+        auto restored = config();
+        restored.loads[0].value = 2.0;
+        restored.loads[0].minimumVoltage = 4.999;
+        kiems_gui::setPowerAnalysis(document, 0, restored);
+        view.setPinRole("J1", "1", kiems_gui::PowerCanvas::Role::Source); // from load to source
+        QCOMPARE(config().sources.size(), std::size_t(2));
+        QCOMPARE(config().sources[1].value, 5.0);
+        QVERIFY(config().loads.empty());
+        kiems_gui::setPowerAnalysis(document, 0, restored);
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            view.grab().save(QDir(snapshots).filePath("power_preview.png")); // the board's copper, before a run
+        }
         QSignalSpy finished(&view, &kiems_gui::PowerView::runFinished);
         view.run();
         QVERIFY(finished.wait(20000));

@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
@@ -112,8 +113,27 @@ PowerCanvas::PowerCanvas(QWidget* parent) : QWidget(parent) {
     setAutoFillBackground(false);
 }
 
+void PowerCanvas::setPreview(std::vector<QPainterPath> copper, std::vector<PadShape> pads) {
+    const bool first = _previewCopper.empty();
+    _previewCopper = std::move(copper);
+    _pads = std::move(pads);
+    if (first && !showingResult()) fit();
+    _mapValid = false;
+    update();
+}
+
+void PowerCanvas::setRoles(QHash<QString, Role> roles) {
+    _roles = std::move(roles);
+    update();
+}
+
+bool PowerCanvas::showingResult() const {
+    return _run && _run->ok();
+}
+
 void PowerCanvas::setRun(std::shared_ptr<const PowerRun> run, bool refit) {
     _run = std::move(run);
+    if (refit) _autoFit = true;
     if (_run && !_run->returnResult) _onReturn = false;
     if (_run && _layer >= static_cast<int>(result().layers.size())) _layer = 0;
     updateRange();
@@ -161,8 +181,19 @@ QRectF PowerCanvas::mapArea() const {
 }
 
 void PowerCanvas::fit() {
-    if (!_run || !_run->ok()) return;
     double xMin = std::numeric_limits<double>::infinity(), xMax = -xMin, yMin = xMin, yMax = -xMin;
+    if (!showingResult()) {
+        // The board's copper for the rail, before it's run.
+        QRectF bounds;
+        for (const QPainterPath& path : _previewCopper) bounds = bounds.united(path.boundingRect());
+        if (bounds.isEmpty()) return;
+        const QRectF area = mapArea();
+        _scale = 0.92 * std::min(area.width() / std::max(bounds.width(), 1e-3), area.height() / std::max(bounds.height(), 1e-3));
+        _origin = QPointF(area.center().x() - bounds.center().x() * _scale, area.center().y() + bounds.center().y() * _scale);
+        _mapValid = false;
+        update();
+        return;
+    }
     // The rail and its return together, so switching between them keeps the view.
     std::vector<const kiems::dc::LayerResult*> layers;
     for (const auto& layer : _run->result.layers) layers.push_back(&layer);
@@ -240,7 +271,23 @@ void PowerCanvas::renderMap() {
     _map.setDevicePixelRatio(ratio);
     _map.fill(QColor(28, 28, 31));
     _mapValid = true;
-    if (!_run || !_run->ok() || _layer >= static_cast<int>(result().layers.size())) return;
+    if (!showingResult()) {
+        // The rail's copper and pads from the board, in greys, until it's run.
+        if (_layer >= static_cast<int>(_previewCopper.size())) return;
+        QPainter painter(&_map);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setClipRect(mapArea());
+        painter.setTransform(QTransform(_scale, 0, 0, -_scale, _origin.x(), _origin.y()));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(104, 104, 112));
+        painter.drawPath(_previewCopper[static_cast<std::size_t>(_layer)]);
+        painter.setBrush(QColor(150, 150, 160));
+        for (const PadShape& pad : _pads) {
+            if (pad.layer == _layer) painter.drawPath(pad.path);
+        }
+        return;
+    }
+    if (_layer >= static_cast<int>(result().layers.size())) return;
     QPainter painter(&_map);
     painter.setClipRect(mapArea());
     const auto& layer = result().layers[static_cast<std::size_t>(_layer)];
@@ -262,11 +309,25 @@ void PowerCanvas::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.drawImage(0, 0, _map);
     painter.setRenderHint(QPainter::Antialiasing);
-    if (!_run || !_run->ok()) {
+    if (!showingResult()) {
+        // The pins chosen so far, and how to choose more.
+        for (const PadShape& pad : _pads) {
+            const auto role = _roles.value(pinKey(pad.footprint, pad.pin), Role::None);
+            if (pad.layer != _layer || role == Role::None) continue;
+            const QPointF at = toScreen(pad.path.boundingRect().center().x(), pad.path.boundingRect().center().y());
+            painter.setPen(QPen(Qt::white, 1.5));
+            painter.setBrush(role == Role::Source ? QColor(60, 200, 90) : QColor(255, 140, 30));
+            painter.drawRect(QRectF(at - QPointF(5, 5), QSizeF(10, 10)));
+        }
         painter.setPen(QColor(200, 200, 200));
-        painter.drawText(mapArea(), Qt::AlignCenter | Qt::TextWordWrap,
-                         _run ? tr("The analysis couldn't run:\n%1").arg(_run->error)
-                              : tr("Run the analysis to see its voltage and current density here."));
+        QString text;
+        if (_run) text = tr("The analysis couldn't run:\n%1").arg(_run->error);
+        else if (_previewCopper.empty()) text = tr("Run the analysis to see its voltage and current density here.");
+        if (!text.isEmpty()) painter.drawText(mapArea(), Qt::AlignCenter | Qt::TextWordWrap, text);
+        if (!_previewCopper.empty()) {
+            painter.drawText(mapArea().adjusted(10, 0, -10, -8), Qt::AlignBottom | Qt::AlignLeft,
+                             tr("Click a pad to make it a source or a load; Run to solve."));
+        }
         return;
     }
     painter.setClipRect(mapArea());
@@ -341,12 +402,14 @@ void PowerCanvas::paintEvent(QPaintEvent*) {
 
 void PowerCanvas::resizeEvent(QResizeEvent*) {
     _mapValid = false;
+    if (_autoFit) fit();
 }
 
 void PowerCanvas::wheelEvent(QWheelEvent* event) {
     const QPointF at = event->position();
     const QPointF board = toBoard(at);
     _scale *= std::pow(1.2, event->angleDelta().y() / 120.0);
+    _autoFit = false;
     _origin = QPointF(at.x() - board.x() * _scale, at.y() + board.y() * _scale);
     _mapValid = false;
     update();
@@ -354,6 +417,20 @@ void PowerCanvas::wheelEvent(QWheelEvent* event) {
 
 void PowerCanvas::mousePressEvent(QMouseEvent* event) {
     _lastMouse = event->position().toPoint();
+    _pressedAt = _lastMouse;
+}
+
+void PowerCanvas::mouseReleaseEvent(QMouseEvent* event) {
+    // A click rather than a drag, on one of the rail's pads on the layer shown.
+    if (event->button() != Qt::LeftButton || (event->position().toPoint() - _pressedAt).manhattanLength() > 3) return;
+    if (_onReturn && showingResult()) return;
+    const QPointF at = toBoard(event->position());
+    for (const PadShape& pad : _pads) {
+        if (pad.layer == _layer && pad.path.contains(at)) {
+            emit padClicked(pad.footprint, pad.pin, event->globalPosition().toPoint());
+            return;
+        }
+    }
 }
 
 void PowerCanvas::mouseMoveEvent(QMouseEvent* event) {
@@ -361,6 +438,7 @@ void PowerCanvas::mouseMoveEvent(QMouseEvent* event) {
     if (event->buttons() != Qt::NoButton) {
         _origin += position - _lastMouse;
         _lastMouse = position;
+        _autoFit = false;
         _mapValid = false;
         update();
         return;
@@ -395,6 +473,7 @@ void PowerCanvas::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void PowerCanvas::mouseDoubleClickEvent(QMouseEvent*) {
+    _autoFit = true;
     fit();
 }
 
@@ -561,6 +640,29 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
 
     // --- Wiring
     connect(_runButton, &QPushButton::clicked, this, &PowerView::run);
+    connect(_canvas, &PowerCanvas::padClicked, this, [this](const QString& footprint, const QString& pin, const QPoint& at) {
+        const auto analysis = current();
+        if (!analysis) return;
+        const auto has = [&](const std::vector<kiems::dc::PinValue>& list) {
+            return std::any_of(list.begin(), list.end(), [&](const kiems::dc::PinValue& p) {
+                return p.footprint == footprint.toStdString() && p.pin == pin.toStdString();
+            });
+        };
+        const PowerCanvas::Role role = has(analysis->sources) ? PowerCanvas::Role::Source
+                                       : has(analysis->loads) ? PowerCanvas::Role::Load
+                                                              : PowerCanvas::Role::None;
+        QMenu menu(this);
+        menu.addSection(tr("%1 pin %2").arg(footprint, pin));
+        const auto add = [&](const QString& text, PowerCanvas::Role choice) {
+            QAction* action = menu.addAction(text, this, [this, footprint, pin, choice] { setPinRole(footprint, pin, choice); });
+            action->setCheckable(true);
+            action->setChecked(role == choice);
+        };
+        add(tr("Source"), PowerCanvas::Role::Source);
+        add(tr("Load"), PowerCanvas::Role::Load);
+        add(tr("Not in the analysis"), PowerCanvas::Role::None);
+        menu.exec(at);
+    });
     connect(_layer, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (_updating || index < 0) return;
         const auto run = currentRun();
@@ -664,6 +766,7 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
 
 void PowerView::setBoard(std::shared_ptr<const BoardData> board) {
     _board = std::move(board);
+    _previewNet.clear(); // rebuilt from the new board
     _updating = true;
     const QString text = _net->currentText();
     const QString returnText = _returnNet->currentText();
@@ -677,7 +780,75 @@ void PowerView::setBoard(std::shared_ptr<const BoardData> board) {
     _net->setCurrentText(text);
     _returnNet->setCurrentText(returnText);
     _updating = false;
+    refreshPreview();
+    if (!currentRun()) refreshResults();
     updateStatus();
+}
+
+void PowerView::refreshPreview() {
+    const auto analysis = current();
+    if (!_board || !analysis) return;
+    // The pins' roles, every time; the copper only when the net changes.
+    QHash<QString, PowerCanvas::Role> roles;
+    for (const auto& pin : analysis->sources) {
+        roles.insert(PowerCanvas::pinKey(QString::fromStdString(pin.footprint), QString::fromStdString(pin.pin)),
+                     PowerCanvas::Role::Source);
+    }
+    for (const auto& pin : analysis->loads) {
+        roles.insert(PowerCanvas::pinKey(QString::fromStdString(pin.footprint), QString::fromStdString(pin.pin)),
+                     PowerCanvas::Role::Load);
+    }
+    _canvas->setRoles(roles);
+    const QString net = QString::fromStdString(analysis->net);
+    if (net == _previewNet) return;
+    _previewNet = net;
+    std::vector<QPainterPath> copper(static_cast<std::size_t>(_board->copperLayers.size()));
+    for (QPainterPath& path : copper) path.setFillRule(Qt::WindingFill);
+    std::vector<PowerCanvas::PadShape> pads;
+    for (const libkicad::CopperPolygon& polygon : _board->geometry.copper) {
+        if (QString::fromStdString(polygon.netName) != net) continue;
+        const int layer = static_cast<int>(_board->copperLayers.indexOf(QString::fromStdString(polygon.copperLayerName)));
+        if (layer < 0 || polygon.loop.pointsMm.size() < 3) continue;
+        QPolygonF points;
+        for (const auto& [x, y] : polygon.loop.pointsMm) points << QPointF(x, y);
+        // Outlines counter-clockwise and holes clockwise, so winding fill cuts the holes.
+        double area = 0;
+        for (int i = 0; i < points.size(); ++i) {
+            const QPointF& a = points[i];
+            const QPointF& b = points[(i + 1) % points.size()];
+            area += a.x() * b.y() - b.x() * a.y();
+        }
+        if ((area > 0) == polygon.loop.hole) std::reverse(points.begin(), points.end());
+        points << points.first();
+        copper[static_cast<std::size_t>(layer)].addPolygon(points);
+        if (!polygon.footprintRef.empty() && !polygon.loop.hole) {
+            QPainterPath pad;
+            pad.addPolygon(points);
+            pads.push_back({QString::fromStdString(polygon.footprintRef), QString::fromStdString(polygon.padNumber), layer, pad});
+        }
+    }
+    _canvas->setPreview(std::move(copper), std::move(pads));
+}
+
+void PowerView::setPinRole(const QString& footprint, const QString& pin, PowerCanvas::Role role) {
+    const std::string part = footprint.toStdString(), number = pin.toStdString();
+    edit([&](kiems::dc::AnalysisConfig& a) {
+        const auto same = [&](const kiems::dc::PinValue& p) { return p.footprint == part && p.pin == number; };
+        // A pin keeps its value if it already had this role; a new one takes its list's last
+        // value -- the rail's voltage, or a load's current.
+        const auto source = std::find_if(a.sources.begin(), a.sources.end(), same);
+        const auto load = std::find_if(a.loads.begin(), a.loads.end(), same);
+        if ((role == PowerCanvas::Role::Source && source != a.sources.end()) ||
+            (role == PowerCanvas::Role::Load && load != a.loads.end())) {
+            return;
+        }
+        const double volts = !a.sources.empty() ? a.sources.back().value : kiems::dc::voltageFromNetName(a.net);
+        const double amps = !a.loads.empty() ? a.loads.back().value : 0.1;
+        std::erase_if(a.sources, same);
+        std::erase_if(a.loads, same);
+        if (role == PowerCanvas::Role::Source) a.sources.push_back({part, number, volts, std::nullopt});
+        else if (role == PowerCanvas::Role::Load) a.loads.push_back({part, number, amps, std::nullopt});
+    });
 }
 
 std::optional<kiems::dc::AnalysisConfig> PowerView::current() const {
@@ -747,6 +918,7 @@ void PowerView::fillFromPinTypes() {
 }
 
 void PowerView::refreshSetup() {
+    refreshPreview();
     const auto analysis = current();
     setEnabled(_document->isOpen());
     _updating = true;
@@ -801,6 +973,8 @@ void PowerView::refreshResults() {
                     _layer->addItem(QString::fromStdString(run->analysis.referenceNet + ": " + layer.name));
                 }
             }
+        } else if (_board) {
+            _layer->addItems(_board->copperLayers); // the board's copper, before a run
         }
         _layer->setCurrentIndex(_layer->count() > 0 ? 0 : -1);
     }
