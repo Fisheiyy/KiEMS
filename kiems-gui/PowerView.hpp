@@ -4,7 +4,9 @@
 // vias' currents, and anything over its limit. Hover the map to read it; drag to pan, scroll to zoom,
 // double-click to frame the copper. Selecting a pin, via or problem in the lists points it out.
 // Before a run the map shows the rail's copper from the board; clicking one of its pads, before or
-// after, makes it a source or a load, or takes it out of the analysis.
+// after, makes it a source or a load, or takes it out of the analysis. Under it all, the whole board:
+// its outline and every other net's copper on the layer shown, dimmed (Other nets turns it off), with
+// each net named on hover.
 #pragma once
 
 #include "BoardModel.hpp"
@@ -49,7 +51,24 @@ public:
         QPainterPath path;
     };
 
+    /// The whole board under the analysis: its outline, and every net's copper on each layer.
+    struct Backdrop {
+        struct Piece {
+            QString net;
+            QPolygonF polygon;
+            QRectF bounds;
+        };
+        QPainterPath outline;
+        std::vector<QPainterPath> copper;       // per copper layer, F.Cu first
+        std::vector<std::vector<Piece>> pieces; // the same, net by net, for naming on hover
+    };
+    static std::shared_ptr<const Backdrop> makeBackdrop(const BoardData& board);
+
     explicit PowerCanvas(QWidget* parent = nullptr);
+
+    void setBackdrop(std::shared_ptr<const Backdrop> backdrop);
+    /// Whether the rest of the board is drawn under the analysis.
+    void setShowBoard(bool on);
 
     /// The rail's copper on each layer and its pads, from the board: shown before a run, and
     /// what clicks pick pins on.
@@ -110,6 +129,8 @@ private:
     bool _autoFit = true;
     std::vector<QPainterPath> _previewCopper;
     std::vector<PadShape> _pads;
+    std::shared_ptr<const Backdrop> _backdrop;
+    bool _showBoard = true;
     QHash<QString, Role> _roles;
 };
 
@@ -160,6 +181,7 @@ private:
     QComboBox* _layer;
     QComboBox* _quantity;
     QCheckBox* _logScale;
+    QCheckBox* _otherNets;
     QPushButton* _runButton;
     PowerCanvas* _canvas;
     QTabWidget* _resultTabs;

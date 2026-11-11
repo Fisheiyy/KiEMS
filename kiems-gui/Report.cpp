@@ -214,6 +214,7 @@ struct PowerEntry {
     QString name;
     QString net;
     std::shared_ptr<const PowerRun> run;
+    std::shared_ptr<const PowerCanvas::Backdrop> backdrop;
     SimulationVerdict verdict;
 };
 
@@ -330,6 +331,7 @@ void addPowerAnalysis(Pages& pages, const PowerEntry& entry) {
         canvas->setAttribute(Qt::WA_DontShowOnScreen);
         canvas->resize(static_cast<int>(pages.width()), static_cast<int>(height));
         canvas->setQuantity(quantity);
+        canvas->setBackdrop(entry.backdrop);
         canvas->setRun(entry.run, false);
         canvas->setLayer(layer, onReturn);
         canvas->fit();
@@ -553,11 +555,13 @@ bool writeReport(const Document& document, const QString& pdfPath, QString* erro
     }
     // Power analyses run afresh: a run takes a fraction of a second, and none is kept on disk.
     std::vector<PowerEntry> power;
+    const auto backdrop = board ? PowerCanvas::makeBackdrop(*board) : nullptr;
     for (const kiems::dc::AnalysisConfig& analysis : powerAnalyses(document)) {
         PowerEntry entry;
         entry.name = QString::fromStdString(analysis.name);
         entry.net = QString::fromStdString(analysis.net);
         if (board) entry.run = runPowerAnalysis(*board, analysis);
+        entry.backdrop = backdrop;
         entry.verdict = judgePowerAnalysis(entry.run.get());
         power.push_back(std::move(entry));
     }

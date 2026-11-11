@@ -84,6 +84,22 @@ QPointF padCentre(const kiems::dc::Terminal& terminal) {
     return QPointF((xMin + xMax) / 2, (yMin + yMax) / 2);
 }
 
+/// A KiCad copper or outline loop, outlines counter-clockwise and holes clockwise, so a winding-fill
+/// path cuts the holes. Closed.
+QPolygonF orientedPolygon(const libkicad::PolygonLoop& loop) {
+    QPolygonF points;
+    for (const auto& [x, y] : loop.pointsMm) points << QPointF(x, y);
+    double area = 0;
+    for (int i = 0; i < points.size(); ++i) {
+        const QPointF& a = points[i];
+        const QPointF& b = points[(i + 1) % points.size()];
+        area += a.x() * b.y() - b.x() * a.y();
+    }
+    if ((area > 0) == loop.hole) std::reverse(points.begin(), points.end());
+    if (!points.isEmpty()) points << points.first();
+    return points;
+}
+
 QPushButton* smallButton(const QString& text, const QString& toolTip) {
     auto* button = new QPushButton(text);
     button->setToolTip(toolTip);
@@ -111,6 +127,43 @@ PowerCanvas::PowerCanvas(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setMinimumSize(300, 240);
     setAutoFillBackground(false);
+}
+
+std::shared_ptr<const PowerCanvas::Backdrop> PowerCanvas::makeBackdrop(const BoardData& board) {
+    auto backdrop = std::make_shared<Backdrop>();
+    backdrop->outline.setFillRule(Qt::WindingFill);
+    for (const libkicad::PolygonLoop& loop : board.geometry.outline) {
+        if (loop.pointsMm.size() >= 3) backdrop->outline.addPolygon(orientedPolygon(loop));
+    }
+    const std::size_t layers = static_cast<std::size_t>(board.copperLayers.size());
+    backdrop->copper.resize(layers);
+    backdrop->pieces.resize(layers);
+    for (QPainterPath& path : backdrop->copper) path.setFillRule(Qt::WindingFill);
+    for (const libkicad::CopperPolygon& polygon : board.geometry.copper) {
+        const int layer = static_cast<int>(board.copperLayers.indexOf(QString::fromStdString(polygon.copperLayerName)));
+        if (layer < 0 || polygon.loop.pointsMm.size() < 3) continue;
+        const QPolygonF points = orientedPolygon(polygon.loop);
+        backdrop->copper[static_cast<std::size_t>(layer)].addPolygon(points);
+        if (!polygon.loop.hole) {
+            backdrop->pieces[static_cast<std::size_t>(layer)].push_back(
+                {QString::fromStdString(polygon.netName), points, points.boundingRect()});
+        }
+    }
+    return backdrop;
+}
+
+void PowerCanvas::setBackdrop(std::shared_ptr<const Backdrop> backdrop) {
+    _backdrop = std::move(backdrop);
+    if (_autoFit) fit();
+    _mapValid = false;
+    update();
+}
+
+void PowerCanvas::setShowBoard(bool on) {
+    _showBoard = on;
+    if (_autoFit) fit();
+    _mapValid = false;
+    update();
 }
 
 void PowerCanvas::setPreview(std::vector<QPainterPath> copper, std::vector<PadShape> pads) {
@@ -182,10 +235,12 @@ QRectF PowerCanvas::mapArea() const {
 
 void PowerCanvas::fit() {
     double xMin = std::numeric_limits<double>::infinity(), xMax = -xMin, yMin = xMin, yMax = -xMin;
-    if (!showingResult()) {
-        // The board's copper for the rail, before it's run.
+    const bool wholeBoard = _showBoard && _backdrop && !_backdrop->outline.isEmpty();
+    if (!showingResult() || wholeBoard) {
+        // The whole board when it's drawn; otherwise the board's copper for the rail, before it's run.
         QRectF bounds;
-        for (const QPainterPath& path : _previewCopper) bounds = bounds.united(path.boundingRect());
+        if (wholeBoard) bounds = _backdrop->outline.boundingRect();
+        else for (const QPainterPath& path : _previewCopper) bounds = bounds.united(path.boundingRect());
         if (bounds.isEmpty()) return;
         const QRectF area = mapArea();
         _scale = 0.92 * std::min(area.width() / std::max(bounds.width(), 1e-3), area.height() / std::max(bounds.height(), 1e-3));
@@ -271,17 +326,35 @@ void PowerCanvas::renderMap() {
     _map.setDevicePixelRatio(ratio);
     _map.fill(QColor(28, 28, 31));
     _mapValid = true;
+    const QTransform boardToScreen(_scale, 0, 0, -_scale, _origin.x(), _origin.y());
+    if (_showBoard && _backdrop) {
+        // The board, and every net's copper on this layer, dimmed under the analysis.
+        QPainter painter(&_map);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setClipRect(mapArea());
+        painter.setTransform(boardToScreen);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(38, 50, 42));
+        painter.drawPath(_backdrop->outline);
+        if (_layer < static_cast<int>(_backdrop->copper.size())) {
+            painter.setBrush(QColor(78, 82, 90));
+            painter.drawPath(_backdrop->copper[static_cast<std::size_t>(_layer)]);
+        }
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(130, 140, 130), 0));
+        painter.drawPath(_backdrop->outline);
+    }
     if (!showingResult()) {
-        // The rail's copper and pads from the board, in greys, until it's run.
+        // The rail's copper and pads, picked out in gold, until it's run.
         if (_layer >= static_cast<int>(_previewCopper.size())) return;
         QPainter painter(&_map);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setClipRect(mapArea());
-        painter.setTransform(QTransform(_scale, 0, 0, -_scale, _origin.x(), _origin.y()));
+        painter.setTransform(boardToScreen);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(104, 104, 112));
+        painter.setBrush(QColor(214, 172, 74));
         painter.drawPath(_previewCopper[static_cast<std::size_t>(_layer)]);
-        painter.setBrush(QColor(150, 150, 160));
+        painter.setBrush(QColor(250, 222, 150));
         for (const PadShape& pad : _pads) {
             if (pad.layer == _layer) painter.drawPath(pad.path);
         }
@@ -443,9 +516,21 @@ void PowerCanvas::mouseMoveEvent(QMouseEvent* event) {
         update();
         return;
     }
-    if (!_run || !_run->ok() || _layer >= static_cast<int>(result().layers.size())) return;
-    // What's under the cursor.
+    // What's under the cursor: the analysis's solution, or else another net's copper.
     const QPointF p = toBoard(event->position());
+    const auto nameNet = [&] {
+        if (!_showBoard || !_backdrop || _layer >= static_cast<int>(_backdrop->pieces.size())) return false;
+        for (const Backdrop::Piece& piece : _backdrop->pieces[static_cast<std::size_t>(_layer)]) {
+            if (!piece.bounds.contains(p) || !piece.polygon.containsPoint(p, Qt::OddEvenFill)) continue;
+            QToolTip::showText(event->globalPosition().toPoint(), piece.net.isEmpty() ? tr("(no net)") : piece.net, this);
+            return true;
+        }
+        return false;
+    };
+    if (!_run || !_run->ok() || _layer >= static_cast<int>(result().layers.size())) {
+        if (!nameNet()) QToolTip::hideText();
+        return;
+    }
     const auto& layer = result().layers[static_cast<std::size_t>(_layer)];
     for (std::size_t e = 0; e < layer.triangles.size(); ++e) {
         const auto& t = layer.triangles[e];
@@ -469,7 +554,7 @@ void PowerCanvas::mouseMoveEvent(QMouseEvent* event) {
                            this);
         return;
     }
-    QToolTip::hideText();
+    if (!nameNet()) QToolTip::hideText();
 }
 
 void PowerCanvas::mouseDoubleClickEvent(QMouseEvent*) {
@@ -499,6 +584,8 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _title->setFont(titleFont);
     _status = new QLabel;
     _status->setEnabled(false);
+    // It gives up its width to the controls beside it rather than pushing them off.
+    _status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     _layer = new QComboBox;
     _layer->setToolTip(tr("The copper layer the map shows."));
     _quantity = new QComboBox;
@@ -506,6 +593,9 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _logScale = new QCheckBox(tr("Log scale"));
     _logScale->setChecked(true);
     _logScale->setToolTip(tr("Show current density over three decades, so the paths that carry little still show."));
+    _otherNets = new QCheckBox(tr("Other nets"));
+    _otherNets->setChecked(true);
+    _otherNets->setToolTip(tr("Draw the rest of the board under the analysis: its outline and every other net's copper."));
     _runButton = new QPushButton(tr("Run"));
     _runButton->setToolTip(tr("Solve the voltage and current across the net's copper."));
     bar->addWidget(_title);
@@ -513,12 +603,14 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     bar->addWidget(_layer);
     bar->addWidget(_quantity);
     bar->addWidget(_logScale);
+    bar->addWidget(_otherNets);
     bar->addWidget(_runButton);
     leftLayout->addLayout(bar);
     auto* vertical = new QSplitter(Qt::Vertical);
     _canvas = new PowerCanvas;
     vertical->addWidget(_canvas);
     _resultTabs = new QTabWidget;
+    _resultTabs->setUsesScrollButtons(false);
     _pins = new QTreeWidget;
     _pins->setObjectName("pins");
     _pins->setHeaderLabels({tr("Pin"), tr("Role"), tr("Voltage"), tr("From the source"), tr("Ground"), tr("Across"),
@@ -701,6 +793,7 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     });
     _logScale->setEnabled(false);
     connect(_logScale, &QCheckBox::toggled, _canvas, &PowerCanvas::setLogScale);
+    connect(_otherNets, &QCheckBox::toggled, _canvas, &PowerCanvas::setShowBoard);
     const auto pointAt = [this](const QVariant& point, const QVariant& layer) {
         if (layer.isValid() && layer.toInt() >= 0) {
             _layer->setCurrentIndex(layer.toInt());
@@ -813,6 +906,7 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
 void PowerView::setBoard(std::shared_ptr<const BoardData> board) {
     _board = std::move(board);
     _previewNet.clear(); // rebuilt from the new board
+    _canvas->setBackdrop(_board ? PowerCanvas::makeBackdrop(*_board) : nullptr);
     _updating = true;
     const QString text = _net->currentText();
     const QString returnText = _returnNet->currentText();
@@ -855,17 +949,7 @@ void PowerView::refreshPreview() {
         if (QString::fromStdString(polygon.netName) != net) continue;
         const int layer = static_cast<int>(_board->copperLayers.indexOf(QString::fromStdString(polygon.copperLayerName)));
         if (layer < 0 || polygon.loop.pointsMm.size() < 3) continue;
-        QPolygonF points;
-        for (const auto& [x, y] : polygon.loop.pointsMm) points << QPointF(x, y);
-        // Outlines counter-clockwise and holes clockwise, so winding fill cuts the holes.
-        double area = 0;
-        for (int i = 0; i < points.size(); ++i) {
-            const QPointF& a = points[i];
-            const QPointF& b = points[(i + 1) % points.size()];
-            area += a.x() * b.y() - b.x() * a.y();
-        }
-        if ((area > 0) == polygon.loop.hole) std::reverse(points.begin(), points.end());
-        points << points.first();
+        const QPolygonF points = orientedPolygon(polygon.loop);
         copper[static_cast<std::size_t>(layer)].addPolygon(points);
         if (!polygon.footprintRef.empty() && !polygon.loop.hole) {
             QPainterPath pad;
@@ -1171,7 +1255,7 @@ void PowerView::updateStatus() {
     } else if (!run->ok()) {
         _status->setText(tr("Failed"));
     } else {
-        QString text = tr("%1 unknowns, %2 s, %3 mW lost in the copper")
+        QString text = tr("%1 unknowns, %2 s, %3 mW lost")
                            .arg(run->result.unknowns + (run->returnResult ? run->returnResult->unknowns : 0))
                            .arg(run->seconds, 0, 'f', 2)
                            .arg((run->result.powerLoss + (run->returnResult ? run->returnResult->powerLoss : 0)) * 1e3, 0, 'f', 1);
@@ -1180,12 +1264,13 @@ void PowerView::updateStatus() {
             for (const auto& terminal : run->result.terminals) {
                 if (terminal.kind == kiems::dc::Terminal::Kind::Source && terminal.connected) regulator = terminal.voltage;
             }
-            text += tr("; sensing %1 pin %2, the regulator sets %3 V")
-                        .arg(QString::fromStdString(run->analysis.sense->footprint), QString::fromStdString(run->analysis.sense->pin))
-                        .arg(regulator, 0, 'f', 4);
+            text += tr("; regulator at %1 V (sensing %2 pin %3)")
+                        .arg(regulator, 0, 'f', 4)
+                        .arg(QString::fromStdString(run->analysis.sense->footprint), QString::fromStdString(run->analysis.sense->pin));
         }
-        if (analysis && !(run->analysis == *analysis)) text = tr("Out of date: the settings changed since this run. ") + text;
+        if (analysis && !(run->analysis == *analysis)) text = tr("Out of date: settings changed since this run. ") + text;
         _status->setText(text);
+        _status->setToolTip(text);
     }
 }
 
