@@ -372,6 +372,8 @@ SimulationVerdict judgeSimulation(bool haveResults, const EyeResults& eyes) {
 bool writeReport(const Document& document, const QString& pdfPath, QString* error) {
     std::vector<Entry> entries;
     for (int i = 0; i < document.simulationCount(); ++i) {
+        // A Simulation Set's template never runs; the simulations it generated are reported.
+        if (document.isSimulationSet(i)) continue;
         Entry entry;
         entry.name = document.simulationName(i);
         entry.results = SimulationResults::load(document.resultsDir(i), document.simulationDir(i));

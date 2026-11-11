@@ -54,6 +54,37 @@ public:
     void removeSimulation(int simulation);
     void renameSimulation(int simulation, const QString& name);
 
+    // --- Simulation Sets (see SimulationSet.hpp)
+    /// Adds a Simulation Set template, with a fresh id and nothing chosen yet.
+    int addSimulationSet(const QString& name, const QString& groundNet);
+    /// Whether the simulation is a Simulation Set template, which generates simulations rather than
+    /// running itself.
+    bool isSimulationSet(int simulation) const { return !simulationSetId(simulation).isEmpty(); }
+    /// A Simulation Set template's id; empty for any other simulation.
+    QString simulationSetId(int simulation) const;
+    /// The id of the set the simulation was generated from; empty if it wasn't. The set's template
+    /// may since have been removed.
+    QString generatedBySet(int simulation) const;
+    /// The template of the set `simulation` was generated from, if it still exists; -1 otherwise.
+    int generatingTemplate(int simulation) const;
+    /// Writes a simulation's JSON outright; `simulation` == simulationCount() appends it. Returns its
+    /// index. For regenerating a set's simulations.
+    int putSimulationJson(int simulation, nlohmann::json json);
+
+    /// Holds changed() back until the outermost batch ends, then emits it once -- and only if the
+    /// document's JSON differs from what it was when the batch began, so a batch of edits that
+    /// cancel out leaves the document unmodified.
+    class ChangeBatch {
+    public:
+        explicit ChangeBatch(Document& document);
+        ~ChangeBatch();
+        ChangeBatch(const ChangeBatch&) = delete;
+        ChangeBatch& operator=(const ChangeBatch&) = delete;
+
+    private:
+        Document& _document;
+    };
+
     QStringList involvedNets(int simulation) const;
     /// Adds or removes an involved net. A new net takes the simulation's reference plane, or
     /// `planeForFirstNet` when no net has set one yet.
@@ -114,6 +145,8 @@ private:
     QString _configPath;
     nlohmann::json _json;
     bool _modified = false;
+    int _batchDepth = 0;
+    nlohmann::json _batchStart;
 };
 
 } // namespace kiems_gui

@@ -1,6 +1,7 @@
 // The right-hand panel, in tabs as the macOS app's Info column is:
 //  - Simulation: the selected simulation's networks -- name, ground net, reference plane, its
-//    excitations, involved and edge-terminated nets.
+//    excitations, involved and edge-terminated nets -- and, for a Simulation Set, the set's own
+//    controls (SimulationSetPanel).
 //  - Selection: whatever was picked on the board, and how the simulation uses it (SelectionPanel).
 //  - Board Setup: the board-wide defaults new simulations and newly included nets take, and a
 //    picked pin's, net's or part's own (BoardSetupPanel).
@@ -18,7 +19,9 @@
 
 class QCheckBox;
 class QComboBox;
+class QFormLayout;
 class QGroupBox;
+class QLayout;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
@@ -29,6 +32,7 @@ namespace kiems_gui {
 class BoardSetupPanel;
 class SelectionPanel;
 class SettingsPanel;
+class SimulationSetPanel;
 class TestsPanel;
 
 class Inspector : public QWidget {
@@ -61,7 +65,10 @@ private:
     SettingsPanel* _settings;
     TestsPanel* _tests;
 
+    SimulationSetPanel* _setPanel;
     QGroupBox* _simulationGroup;
+    QFormLayout* _simulationForm;
+    QLayout* _excitationsRow;
     QLineEdit* _name;
     QCheckBox* _differentialPair;
     QComboBox* _groundNet;

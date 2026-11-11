@@ -6,6 +6,7 @@
 #include "Report.hpp"
 #include "ResultsView.hpp"
 #include "SimulationEditor.hpp"
+#include "SimulationSet.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -23,6 +24,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
@@ -35,7 +37,10 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
+#include <QTimer>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -46,6 +51,11 @@ namespace {
 
 constexpr int kSimulationRole = Qt::UserRole;
 constexpr int kPageRole = Qt::UserRole + 1;
+
+/// The key a sidebar row's expansion is remembered by.
+QString expansionKey(const QTreeWidgetItem* item) {
+    return item->data(0, Qt::UserRole + 2).toString();
+}
 
 /// A status dot like the macOS sidebar's: hollow until a stage has run, filled once it has.
 QIcon statusDot(bool done, const QColor& color) {
@@ -215,10 +225,16 @@ MainWindow::MainWindow() {
         rebuildSidebar();
         updateHighlights();
         updateActions();
+        scheduleSetRegeneration();
     });
     connect(&_document, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(_chooseBoardButton, &QPushButton::clicked, this, &MainWindow::chooseBoard);
-    connect(_addButton, &QPushButton::clicked, this, &MainWindow::addSimulation);
+    connect(_addButton, &QPushButton::clicked, this, [this] {
+        QMenu menu(this);
+        menu.addAction(_addAction);
+        menu.addAction(_addSetAction);
+        menu.exec(_addButton->mapToGlobal(QPoint(0, _addButton->height())));
+    });
     connect(_removeButton, &QPushButton::clicked, this, &MainWindow::removeSimulation);
     connect(_stopButton, &QPushButton::clicked, this, &MainWindow::stopRun);
     connect(_fieldViewer, &FieldViewer::captureRequested, this, [this] { runSimulation(true); });
@@ -240,6 +256,8 @@ MainWindow::MainWindow() {
         _inspector->setBoard(_boardModel.data());
         populateLayerList();
         updateHighlights();
+        // Sets edited before the board was there to match against.
+        scheduleSetRegeneration();
     });
     connect(&_boardModel, &BoardModel::failed, this, [this](const QString& error) {
         _statusLabel->setText(tr("The board couldn't be loaded."));
@@ -299,6 +317,8 @@ void MainWindow::createActions() {
 
     QMenu* simulation = menuBar()->addMenu(tr("&Simulation"));
     _addAction = simulation->addAction(tr("&Add Simulation..."), this, &MainWindow::addSimulation);
+    _addSetAction = simulation->addAction(tr("Add Simulation &Set..."), this, &MainWindow::addSimulationSet);
+    _addSetAction->setToolTip(tr("Add a template that generates one simulation per net it selects."));
     _removeAction = simulation->addAction(tr("&Remove Simulation"), this, &MainWindow::removeSimulation);
     simulation->addSeparator();
     _runAction = simulation->addAction(tr("&Run"), QKeySequence(Qt::CTRL | Qt::Key_R), this, &MainWindow::runSelected);
@@ -324,6 +344,7 @@ bool MainWindow::openDocument(const QString& path) {
         QMessageBox::warning(this, tr("KiEMS"), error);
         return false;
     }
+    resetSetSnapshots();
     updateTitle();
     loadBoard();
     if (_document.simulationCount() > 0) showPage(0, Page::Board);
@@ -347,6 +368,7 @@ void MainWindow::newDocument() {
         QMessageBox::warning(this, tr("KiEMS"), error);
         return;
     }
+    resetSetSnapshots();
     updateTitle();
     loadBoard();
     _pages->setCurrentWidget(_boardPage);
@@ -438,6 +460,16 @@ void MainWindow::loadBoard() {
     _boardModel.load(board);
 }
 
+QString MainWindow::guessGroundNet() const {
+    QString ground = "GND";
+    if (auto board = _boardModel.data(); board && !board->nets.contains(ground)) {
+        for (const QString& net : board->nets) {
+            if (net.contains("GND", Qt::CaseInsensitive)) return net;
+        }
+    }
+    return ground;
+}
+
 void MainWindow::addSimulation() {
     if (!_document.isOpen()) return;
     bool ok = false;
@@ -445,34 +477,57 @@ void MainWindow::addSimulation() {
                                                _document.uniqueSimulationName(tr("Simulation")), &ok)
                              .trimmed();
     if (!ok || name.isEmpty()) return;
-    QString ground = "GND";
-    if (auto board = _boardModel.data(); board && !board->nets.contains(ground)) {
-        for (const QString& net : board->nets) {
-            if (net.contains("GND", Qt::CaseInsensitive)) {
-                ground = net;
-                break;
-            }
-        }
-    }
-    const int index = _document.addSimulation(_document.uniqueSimulationName(name), ground);
+    const int index = _document.addSimulation(_document.uniqueSimulationName(name), guessGroundNet());
     // Board Setup's ground, when chosen, replaces the guess above.
     SimulationEditor(_document, _boardModel.data().get(), index).applyBoardSetup();
+    showPage(index, Page::Board);
+}
+
+void MainWindow::addSimulationSet() {
+    if (!_document.isOpen()) return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Add Simulation Set"), tr("Name:"), QLineEdit::Normal,
+                                               _document.uniqueSimulationName(tr("Simulation Set")), &ok)
+                             .trimmed();
+    if (!ok || name.isEmpty()) return;
+    int index;
+    {
+        const Document::ChangeBatch batch(_document);
+        index = _document.addSimulationSet(_document.uniqueSimulationName(name), guessGroundNet());
+        // What it generates starts from Board Setup's defaults, as any new simulation does.
+        SimulationEditor(_document, _boardModel.data().get(), index).applyBoardSetup();
+    }
     showPage(index, Page::Board);
 }
 
 void MainWindow::removeSimulation() {
     const int simulation = currentSimulation();
     if (simulation < 0) return;
-    if (QMessageBox::question(this, tr("KiEMS"),
-                              tr("Remove the simulation \"%1\"?").arg(_document.simulationName(simulation))) !=
-        QMessageBox::Yes) {
-        return;
-    }
-    _document.removeSimulation(simulation);
+    // A set goes with the simulations it generated; they can't be removed on their own, as the set
+    // would only generate them again.
+    const QList<int> generated = generatedSimulations(_document, simulation);
+    const QString name = _document.simulationName(simulation);
+    const QString question =
+        _document.isSimulationSet(simulation)
+            ? tr("Remove the Simulation Set \"%1\" and the %n simulation(s) it generated?", nullptr,
+                 static_cast<int>(generated.size()))
+                  .arg(name)
+            : tr("Remove the simulation \"%1\"?").arg(name);
+    if (QMessageBox::question(this, tr("KiEMS"), question) != QMessageBox::Yes) return;
+    QList<int> doomed = generated;
+    doomed << simulation;
+    std::sort(doomed.begin(), doomed.end(), std::greater<>());
+    const Document::ChangeBatch batch(_document);
+    for (int index : doomed) _document.removeSimulation(index);
 }
 
 void MainWindow::runSelected() {
     runSimulation(false);
+}
+
+QList<int> MainWindow::runTargets(int simulation) const {
+    if (_document.isSimulationSet(simulation)) return generatedSimulations(_document, simulation);
+    return simulation >= 0 ? QList<int>{simulation} : QList<int>();
 }
 
 void MainWindow::runSimulation(bool storeFields) {
@@ -480,6 +535,22 @@ void MainWindow::runSimulation(bool storeFields) {
     if (simulation < 0) return;
     if (const QString problem = _document.validate(); !problem.isEmpty()) {
         QMessageBox::warning(this, tr("KiEMS"), tr("The simulation can't run yet:\n\n%1").arg(problem));
+        return;
+    }
+    // A set runs the simulations it generated.
+    if (_document.isSimulationSet(simulation)) {
+        QStringList names;
+        for (int target : runTargets(simulation)) {
+            if (_document.mainExcitation(target)) names << _document.simulationName(target);
+        }
+        if (names.isEmpty()) {
+            QMessageBox::information(this, tr("KiEMS"),
+                                     tr("The set hasn't generated any simulations yet. Choose its excitation IC and "
+                                        "nets in the Simulation tab."));
+            return;
+        }
+        for (const QString& name : names) _jobs.enqueue(name, storeFields);
+        if (_jobs.queuedCount() > 0) _jobsDock->show();
         return;
     }
     if (!_document.mainExcitation(simulation)) {
@@ -506,6 +577,8 @@ void MainWindow::runAll() {
     QStringList skipped;
     QStringList runnable;
     for (int i = 0; i < _document.simulationCount(); ++i) {
+        // A set's template never runs; the simulations it generated are among these.
+        if (_document.isSimulationSet(i)) continue;
         (_document.mainExcitation(i) ? runnable : skipped) << _document.simulationName(i);
     }
     if (runnable.isEmpty()) {
@@ -649,6 +722,53 @@ void MainWindow::updateEngineButton() {
     _engineButton->setText(tr("Engine: %1").arg(text));
 }
 
+void MainWindow::resetSetSnapshots() {
+    _setSnapshots.clear();
+    for (int i = 0; i < _document.simulationCount(); ++i) {
+        if (_document.isSimulationSet(i)) _setSnapshots.insert(_document.simulationSetId(i), *_document.simulationJson(i));
+    }
+}
+
+void MainWindow::scheduleSetRegeneration() {
+    if (_setRegenerationPending) return;
+    _setRegenerationPending = true;
+    // After the edit that prompted it has finished, and once for a burst of edits.
+    QTimer::singleShot(0, this, &MainWindow::regenerateChangedSets);
+}
+
+void MainWindow::regenerateChangedSets() {
+    _setRegenerationPending = false;
+    const auto board = _boardModel.data();
+    if (!_document.isOpen() || !board) return; // left until there's a board to match against
+    QStringList ids;
+    for (int i = 0; i < _document.simulationCount(); ++i) {
+        if (_document.isSimulationSet(i)) ids << _document.simulationSetId(i);
+    }
+    for (const QString& id : ids) {
+        int index = -1;
+        for (int i = 0; i < _document.simulationCount() && index < 0; ++i) {
+            if (_document.simulationSetId(i) == id) index = i;
+        }
+        if (index < 0) continue;
+        const nlohmann::json snapshot = *_document.simulationJson(index);
+        if (_setSnapshots.contains(id) && _setSnapshots.value(id) == snapshot) continue;
+        _setSnapshots.insert(id, snapshot);
+        const QString name = _document.simulationName(index);
+        const auto result = regenerateSimulationSet(_document, board.get(), index);
+        if (result && (result->added || result->removed)) {
+            // Removing simulations may have moved the template.
+            int generated = 0;
+            for (int i = 0; i < _document.simulationCount(); ++i) {
+                if (!_document.isSimulationSet(i) && _document.generatedBySet(i) == id) ++generated;
+            }
+            _statusLabel->setText(tr("%1 now generates %n simulation(s).", nullptr, generated).arg(name));
+        }
+    }
+    for (auto it = _setSnapshots.begin(); it != _setSnapshots.end();) {
+        it = ids.contains(it.key()) ? std::next(it) : _setSnapshots.erase(it);
+    }
+}
+
 int MainWindow::currentSimulation() const {
     const QTreeWidgetItem* item = _sidebar->currentItem();
     return item ? item->data(0, kSimulationRole).toInt() : -1;
@@ -658,42 +778,75 @@ void MainWindow::rebuildSidebar() {
     _rebuildingSidebar = true;
     const int selectedSimulation = currentSimulation();
     const int selectedPage = _sidebar->currentItem() ? _sidebar->currentItem()->data(0, kPageRole).toInt() : -1;
+    for (QTreeWidgetItemIterator it(_sidebar); *it; ++it) {
+        if ((*it)->childCount() > 0) _expanded.insert(expansionKey(*it), (*it)->isExpanded());
+    }
     _sidebar->clear();
-    const QColor accent = palette().color(QPalette::Highlight);
     for (int i = 0; i < _document.simulationCount(); ++i) {
-        auto* top = new QTreeWidgetItem(_sidebar, {_document.simulationName(i)});
-        top->setData(0, kSimulationRole, i);
-        top->setData(0, kPageRole, -1);
-        QFont font = top->font(0);
-        font.setBold(true);
-        top->setFont(0, font);
-        const Job* job = _jobs.running();
-        const bool running = job && job->simulation == _document.simulationName(i);
-        const bool runningStoresFields = running && job->storeFields;
-        if (running) top->setToolTip(0, tr("Running"));
-        else if (_jobs.contains(_document.simulationName(i))) top->setToolTip(0, tr("Queued"));
-        auto* board = new QTreeWidgetItem(top, {tr("Board")});
-        board->setData(0, kSimulationRole, i);
-        board->setData(0, kPageRole, static_cast<int>(Page::Board));
-        board->setIcon(0, statusDot(_document.hasGeometry(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
-        auto* results = new QTreeWidgetItem(top, {tr("Simulation Results")});
-        results->setData(0, kSimulationRole, i);
-        results->setData(0, kPageRole, static_cast<int>(Page::Results));
-        results->setIcon(0, statusDot(_document.hasResults(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
-        auto* fields = new QTreeWidgetItem(top, {tr("Field Viewer")});
-        fields->setData(0, kSimulationRole, i);
-        fields->setData(0, kPageRole, static_cast<int>(Page::Fields));
-        const bool haveFields = !FieldViewer::findSeries(_document.simulationDir(i)).empty();
-        fields->setIcon(0, statusDot(haveFields, runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
-        top->setExpanded(true);
-        if (i == selectedSimulation) {
-            _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)  ? results
-                                     : selectedPage == static_cast<int>(Page::Fields) ? fields
-                                     : selectedPage == static_cast<int>(Page::Board)  ? board
-                                                                                      : top);
+        if (_document.isSimulationSet(i)) {
+            // A set's row holds the simulations it generated, sorted by name.
+            auto* set = new QTreeWidgetItem(_sidebar, {_document.simulationName(i)});
+            set->setData(0, kSimulationRole, i);
+            set->setData(0, kPageRole, -1);
+            set->setData(0, Qt::UserRole + 2, "set:" + _document.simulationSetId(i));
+            set->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
+            QFont font = set->font(0);
+            font.setBold(true);
+            set->setFont(0, font);
+            const QList<int> generated = generatedSimulations(_document, i);
+            set->setToolTip(0, tr("Simulation Set: generates %n simulation(s).", nullptr, static_cast<int>(generated.size())));
+            if (i == selectedSimulation) _sidebar->setCurrentItem(set);
+            for (int g : generated) addSimulationItem(set, g, selectedSimulation, selectedPage);
+            set->setExpanded(_expanded.value(expansionKey(set), true));
+        } else if (_document.generatingTemplate(i) < 0) {
+            addSimulationItem(nullptr, i, selectedSimulation, selectedPage);
         }
     }
+    // The selection stays in view, even inside a collapsed row.
+    if (QTreeWidgetItem* current = _sidebar->currentItem()) {
+        for (QTreeWidgetItem* parent = current->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
+    }
     _rebuildingSidebar = false;
+}
+
+QTreeWidgetItem* MainWindow::addSimulationItem(QTreeWidgetItem* parent, int i, int selectedSimulation,
+                                               int selectedPage) {
+    const QColor accent = palette().color(QPalette::Highlight);
+    const QString name = _document.simulationName(i);
+    auto* top = parent ? new QTreeWidgetItem(parent, {name}) : new QTreeWidgetItem(_sidebar, {name});
+    top->setData(0, kSimulationRole, i);
+    top->setData(0, kPageRole, -1);
+    top->setData(0, Qt::UserRole + 2, name);
+    QFont font = top->font(0);
+    font.setBold(true);
+    top->setFont(0, font);
+    const Job* job = _jobs.running();
+    const bool running = job && job->simulation == name;
+    const bool runningStoresFields = running && job->storeFields;
+    if (running) top->setToolTip(0, tr("Running"));
+    else if (_jobs.contains(name)) top->setToolTip(0, tr("Queued"));
+    auto* board = new QTreeWidgetItem(top, {tr("Board")});
+    board->setData(0, kSimulationRole, i);
+    board->setData(0, kPageRole, static_cast<int>(Page::Board));
+    board->setIcon(0, statusDot(_document.hasGeometry(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
+    auto* results = new QTreeWidgetItem(top, {tr("Simulation Results")});
+    results->setData(0, kSimulationRole, i);
+    results->setData(0, kPageRole, static_cast<int>(Page::Results));
+    results->setIcon(0, statusDot(_document.hasResults(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
+    auto* fields = new QTreeWidgetItem(top, {tr("Field Viewer")});
+    fields->setData(0, kSimulationRole, i);
+    fields->setData(0, kPageRole, static_cast<int>(Page::Fields));
+    const bool haveFields = !FieldViewer::findSeries(_document.simulationDir(i)).empty();
+    fields->setIcon(0, statusDot(haveFields, runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
+    // A set's simulations start folded, as there can be many.
+    top->setExpanded(_expanded.value(expansionKey(top), parent == nullptr));
+    if (i == selectedSimulation) {
+        _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)  ? results
+                                 : selectedPage == static_cast<int>(Page::Fields) ? fields
+                                 : selectedPage == static_cast<int>(Page::Board)  ? board
+                                                                                  : top);
+    }
+    return top;
 }
 
 void MainWindow::selectionChanged() {
@@ -724,10 +877,16 @@ void MainWindow::selectionChanged() {
 }
 
 void MainWindow::showPage(int simulation, Page page) {
-    for (int i = 0; i < _sidebar->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* top = _sidebar->topLevelItem(i);
-        if (top->data(0, kSimulationRole).toInt() != simulation) continue;
-        _sidebar->setCurrentItem(top->child(page == Page::Board ? 0 : page == Page::Results ? 1 : 2));
+    for (QTreeWidgetItemIterator it(_sidebar); *it; ++it) {
+        QTreeWidgetItem* item = *it;
+        if (item->data(0, kSimulationRole).toInt() != simulation || item->data(0, kPageRole).toInt() != -1) continue;
+        // A set's row has no pages of its own.
+        const int child = page == Page::Board ? 0 : page == Page::Results ? 1 : 2;
+        QTreeWidgetItem* target = item->childCount() == 3 && item->child(child)->data(0, kPageRole).toInt() >= 0
+                                      ? item->child(child)
+                                      : item;
+        for (QTreeWidgetItem* parent = target->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
+        _sidebar->setCurrentItem(target);
         selectionChanged();
         return;
     }
@@ -740,8 +899,13 @@ void MainWindow::updateHighlights() {
         _boardView->setExcitation({}, {});
         return;
     }
-    const QStringList nets = _document.involvedNets(simulation);
-    _boardView->setHighlightedNets(QSet<QString>(nets.begin(), nets.end()));
+    // A set shows every net its simulations cover.
+    QSet<QString> nets;
+    for (int target : _document.isSimulationSet(simulation) ? runTargets(simulation) : QList<int>{simulation}) {
+        const QStringList involved = _document.involvedNets(target);
+        nets.unite(QSet<QString>(involved.begin(), involved.end()));
+    }
+    _boardView->setHighlightedNets(nets);
     const auto excitation = _document.mainExcitation(simulation);
     _boardView->setExcitation(excitation ? excitation->footprint : QString(), excitation ? excitation->pin : QString());
 }
@@ -780,15 +944,21 @@ void MainWindow::updateActions() {
     const bool open = _document.isOpen();
     const int simulation = currentSimulation();
     const bool haveSimulation = simulation >= 0;
-    // The selected simulation can't be removed while its run is queued or under way.
-    const bool busy = haveSimulation && _jobs.contains(_document.simulationName(simulation));
+    // The selected simulation can't be removed while its run is queued or under way, nor a set
+    // while any of its simulations' are, nor one a set generated.
+    bool busy = false;
+    for (int target : runTargets(simulation)) busy = busy || _jobs.contains(_document.simulationName(target));
+    const bool generated = haveSimulation && _document.generatingTemplate(simulation) >= 0;
     const bool canRun = !PipelineRunner::cliPath().isEmpty();
     _saveAction->setEnabled(open);
     _addAction->setEnabled(open);
+    _addSetAction->setEnabled(open);
     _addButton->setEnabled(open);
-    _removeAction->setEnabled(haveSimulation && !busy);
-    _removeButton->setEnabled(haveSimulation && !busy);
-    _runAction->setEnabled(haveSimulation && canRun);
+    _removeAction->setEnabled(haveSimulation && !busy && !generated);
+    _removeButton->setEnabled(_removeAction->isEnabled());
+    _removeButton->setToolTip(generated ? tr("A simulation its set generated goes when the set no longer selects its net.")
+                                        : QString());
+    _runAction->setEnabled(haveSimulation && canRun && !runTargets(simulation).isEmpty());
     _runFieldsAction->setEnabled(_runAction->isEnabled());
     _runAllAction->setEnabled(open && _document.simulationCount() > 0 && canRun);
     _stopAction->setEnabled(_jobs.isBusy());

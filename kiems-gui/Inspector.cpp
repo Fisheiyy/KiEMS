@@ -4,6 +4,7 @@
 #include "QuantityEdit.hpp"
 #include "SelectionPanel.hpp"
 #include "SettingsPanel.hpp"
+#include "SimulationSetPanel.hpp"
 #include "SimulationEditor.hpp"
 #include "TestsPanel.hpp"
 
@@ -92,7 +93,7 @@ Inspector::Inspector(Document* document, QWidget* parent) : QWidget(parent), _do
 
     // --- Simulation tab
     _simulationGroup = new QGroupBox(tr("Simulation"));
-    auto* form = new QFormLayout(_simulationGroup);
+    auto* form = _simulationForm = new QFormLayout(_simulationGroup);
     _name = new QLineEdit;
     _differentialPair = new QCheckBox(tr("Differential pair"));
     _differentialPair->setToolTip(tr("Simulate the involved nets as a differential pair: each pin choice is mirrored "
@@ -137,18 +138,25 @@ Inspector::Inspector(Document* document, QWidget* parent) : QWidget(parent), _do
     form->addRow(QString(), _differentialPair);
     form->addRow(tr("Ground net:"), _groundNet);
     form->addRow(tr("Reference plane:"), _plane);
-    form->addRow(tr("Excitations:"), listWithButtons(_excitations, {_removeExcitation}));
+    _excitationsRow = listWithButtons(_excitations, {_removeExcitation});
+    form->addRow(tr("Excitations:"), _excitationsRow);
     form->addRow(tr("Involved nets:"), listWithButtons(_nets, {_removeNet}));
     form->addRow(tr("Edge-terminated nets:"), listWithButtons(_edgeNets, {_addEdgeNet, _removeEdgeNet}, _edgeNetPicker));
 
     // --- The other tabs
+    _setPanel = new SimulationSetPanel(document);
+    auto* simulationPage = new QWidget;
+    auto* simulationLayout = new QVBoxLayout(simulationPage);
+    simulationLayout->setContentsMargins(0, 0, 0, 0);
+    simulationLayout->addWidget(_setPanel);
+    simulationLayout->addWidget(_simulationGroup);
     _selection = new SelectionPanel(document);
     _settings = new SettingsPanel(document);
     _tests = new TestsPanel(document);
     _boardSetup = new BoardSetupPanel(document);
     _selectionPage = scrolling(page(_selection));
     _boardSetupPage = scrolling(page(_boardSetup));
-    _tabs->addTab(scrolling(page(_simulationGroup)), tr("Simulation"));
+    _tabs->addTab(scrolling(page(simulationPage)), tr("Simulation"));
     _tabs->addTab(_selectionPage, tr("Selection"));
     _tabs->addTab(_boardSetupPage, tr("Board Setup"));
     _tabs->addTab(scrolling(page(_settings)), tr("Settings"));
@@ -229,6 +237,7 @@ void Inspector::setBoard(std::shared_ptr<const BoardData> board) {
     _board = std::move(board);
     _selection->setBoard(_board);
     _boardSetup->setBoard(_board);
+    _setPanel->setBoard(_board);
     populateBoardLists();
     refresh();
 }
@@ -236,6 +245,7 @@ void Inspector::setBoard(std::shared_ptr<const BoardData> board) {
 void Inspector::setSimulation(int simulation) {
     _simulation = simulation;
     _selection->setSimulation(simulation);
+    _setPanel->setSimulation(simulation);
     _settings->setSimulation(simulation);
     _tests->setSimulation(simulation);
     refresh();
@@ -269,6 +279,12 @@ void Inspector::refresh() {
     _excitations->clear();
     _nets->clear();
     _edgeNets->clear();
+    // A set's template drives nothing itself; a simulation it generated is named by it.
+    const bool isSet = haveSimulation && _document->isSimulationSet(_simulation);
+    const bool generated = haveSimulation && _document->generatingTemplate(_simulation) >= 0;
+    _simulationForm->setRowVisible(_excitationsRow, !isSet);
+    _name->setReadOnly(generated);
+    _name->setToolTip(generated ? tr("Named after its Simulation Set and net; rename the set instead.") : QString());
     if (haveSimulation) {
         _name->setText(_document->simulationName(_simulation));
         _differentialPair->setChecked(_document->simulationValue(_simulation, "/is_differential_pair").get<bool>());

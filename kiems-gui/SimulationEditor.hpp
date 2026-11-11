@@ -72,6 +72,9 @@ public:
     void setPinAbsorbing(const QString& footprint, const QString& pin, bool absorbing);
     void setPinImpedance(const QString& footprint, const QString& pin, std::optional<double> ohms);
     void setPinLoadCapacitance(const QString& footprint, const QString& pin, std::optional<double> farads);
+    /// Sets the pin's port outright -- a reportable probe or not, absorbing or not -- without the
+    /// differential-pair mirroring: what a Simulation Set applies to the pins it picks.
+    void setPinPort(const QString& footprint, const QString& pin, bool probed, bool absorbing);
 
     // --- Excitations
     std::optional<kiems::ExcitationConfig> excitation(const QString& footprint, const QString& pin) const;

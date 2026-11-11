@@ -45,6 +45,10 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     SettingsPanel.hpp
     SimulationEditor.cpp
     SimulationEditor.hpp
+    SimulationSet.cpp
+    SimulationSet.hpp
+    SimulationSetPanel.cpp
+    SimulationSetPanel.hpp
     TestsPanel.cpp
     TestsPanel.hpp)
 
@@ -106,6 +110,10 @@ if(TARGET Qt6::Test)
         SettingsPanel.hpp
         SimulationEditor.cpp
         SimulationEditor.hpp
+        SimulationSet.cpp
+        SimulationSet.hpp
+        SimulationSetPanel.cpp
+        SimulationSetPanel.hpp
         TestsPanel.cpp
         TestsPanel.hpp)
     set_target_properties(kiems-gui-tests PROPERTIES

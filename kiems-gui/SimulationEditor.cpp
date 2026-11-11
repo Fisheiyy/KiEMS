@@ -583,6 +583,14 @@ void SimulationEditor::setPinAbsorbing(const QString& footprint, const QString& 
     });
 }
 
+void SimulationEditor::setPinPort(const QString& footprint, const QString& pin, bool probed, bool absorbing) {
+    const QString net = pinNet(footprint, pin);
+    if (net.isEmpty()) return;
+    editNets([&](Json& sim, std::vector<kiems::InvolvedNetConfig>& entries) {
+        applyPinProbed(sim, entries, footprint, pin, net, probed, absorbing);
+    });
+}
+
 void SimulationEditor::applyPinExcited(Json& sim, std::vector<kiems::InvolvedNetConfig>& entries,
                                        const QString& footprint, const QString& pin, const QString& net,
                                        bool excited) const {

@@ -9,7 +9,10 @@
 #include "JobQueue.hpp"
 #include "PipelineRunner.hpp"
 
+#include <QHash>
 #include <QMainWindow>
+
+#include <nlohmann/json.hpp>
 
 class QAction;
 class QDockWidget;
@@ -51,6 +54,10 @@ private:
     void chooseBoard();
     void loadBoard();
     void addSimulation();
+    /// Adds a Simulation Set template (see SimulationSet.hpp).
+    void addSimulationSet();
+    /// The ground net a new simulation starts with, before Board Setup has its say.
+    QString guessGroundNet() const;
     void removeSimulation();
     void runSelected();
     /// Queues the selected simulation; `storeFields` also keeps its field frames for the Field
@@ -67,7 +74,19 @@ private:
     void showEngineSettings();
     void updateEngineButton();
 
+    /// The simulations running `simulation` queues: itself, or every simulation a set generated.
+    QList<int> runTargets(int simulation) const;
+    /// Regenerates, soon, every set whose template changed since it was last regenerated.
+    void scheduleSetRegeneration();
+    void regenerateChangedSets();
+    /// Takes the open document's set templates as already regenerated.
+    void resetSetSnapshots();
+
     void rebuildSidebar();
+    /// One simulation's row and its Board, Results and Field Viewer pages, under `parent` (or at the
+    /// top level).
+    QTreeWidgetItem* addSimulationItem(QTreeWidgetItem* parent, int simulation, int selectedSimulation,
+                                       int selectedPage);
     void selectionChanged();
     void showPage(int simulation, Page page);
     void updateHighlights();
@@ -113,8 +132,15 @@ private:
     QAction* _runAllAction;
     QAction* _stopAction;
     QAction* _addAction;
+    QAction* _addSetAction;
     QAction* _removeAction;
     bool _rebuildingSidebar = false;
+    /// Whether each sidebar row with children (by simulation name, or "set:" and the set's id) was
+    /// left expanded, so a rebuild keeps them as they were.
+    QHash<QString, bool> _expanded;
+    /// Each set template's JSON when its simulations were last generated from it, by set id.
+    QHash<QString, nlohmann::json> _setSnapshots;
+    bool _setRegenerationPending = false;
     /// Jobs started, and how many of them failed, since the queue was last empty: a lone run that
     /// fails says so in a dialog, but a batch carries on and leaves its failures in the Jobs list.
     int _batchStarted = 0;

@@ -1,12 +1,14 @@
 #include "Document.hpp"
 
 #include "kiems/config.hpp"
+#include "kiems/path_utf8.hpp"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QTemporaryDir>
+#include <QUuid>
 
 #include <filesystem>
 
@@ -20,6 +22,11 @@ std::string utf8(const QString& text) {
 
 QString qstr(const std::string& text) {
     return QString::fromStdString(text);
+}
+
+/// The folder a simulation's output goes in under each stage's directory, as the pipeline names it.
+QString directoryName(const QString& simulation) {
+    return QString::fromStdU16String(kiems::simulationDirectoryName(utf8(simulation)).u16string());
 }
 
 std::filesystem::path fsPath(const QString& path) {
@@ -217,6 +224,64 @@ void Document::removeSimulation(int index) {
     touch();
 }
 
+int Document::addSimulationSet(const QString& name, const QString& groundNet) {
+    const ChangeBatch batch(*this);
+    const int index = addSimulation(name, groundNet);
+    kiems::SimulationSetConfig set;
+    set.id = utf8(QUuid::createUuid().toString(QUuid::WithoutBraces).toUpper());
+    (*simulation(index))["simulation_set"] = set;
+    touch();
+    return index;
+}
+
+QString Document::simulationSetId(int index) const {
+    const nlohmann::json* sim = simulation(index);
+    if (!sim) return {};
+    const auto it = sim->find("simulation_set");
+    if (it == sim->end() || !it->is_object()) return {};
+    const auto id = it->find("id");
+    return id != it->end() && id->is_string() ? qstr(id->get<std::string>()) : QString();
+}
+
+QString Document::generatedBySet(int index) const {
+    const nlohmann::json* sim = simulation(index);
+    if (!sim) return {};
+    const auto it = sim->find("generated_by_set");
+    return it != sim->end() && it->is_string() ? qstr(it->get<std::string>()) : QString();
+}
+
+int Document::generatingTemplate(int index) const {
+    const QString id = generatedBySet(index);
+    if (id.isEmpty()) return -1;
+    for (int i = 0; i < simulationCount(); ++i) {
+        if (simulationSetId(i) == id) return i;
+    }
+    return -1;
+}
+
+int Document::putSimulationJson(int index, nlohmann::json json) {
+    if (nlohmann::json* sim = simulation(index)) {
+        if (*sim == json) return index;
+        *sim = std::move(json);
+    } else {
+        _json["simulations"].push_back(std::move(json));
+        index = simulationCount() - 1;
+    }
+    touch();
+    return index;
+}
+
+Document::ChangeBatch::ChangeBatch(Document& document) : _document(document) {
+    if (_document._batchDepth++ == 0) _document._batchStart = _document._json;
+}
+
+Document::ChangeBatch::~ChangeBatch() {
+    if (--_document._batchDepth > 0) return;
+    const bool changed = _document._json != _document._batchStart;
+    _document._batchStart = nullptr;
+    if (changed) _document.touch();
+}
+
 void Document::renameSimulation(int index, const QString& name) {
     if (name == simulationName(index)) return;
     if (nlohmann::json* sim = simulation(index)) {
@@ -410,15 +475,16 @@ void Document::setSimulationValue(int index, const QString& pointer, const nlohm
 }
 
 QString Document::resultsDir(int index) const {
-    return QDir(packageDir()).filePath("ems/results/" + simulationName(index));
+    return QDir(packageDir()).filePath("ems/results/" + directoryName(simulationName(index)));
 }
 
 QString Document::simulationDir(int index) const {
-    return QDir(packageDir()).filePath("ems/simulation/" + simulationName(index));
+    return QDir(packageDir()).filePath("ems/simulation/" + directoryName(simulationName(index)));
 }
 
 bool Document::hasGeometry(int index) const {
-    return QFileInfo::exists(QDir(packageDir()).filePath("ems/geometry/" + simulationName(index) + "/geometry.json"));
+    return QFileInfo::exists(
+        QDir(packageDir()).filePath("ems/geometry/" + directoryName(simulationName(index)) + "/geometry.json"));
 }
 
 bool Document::hasResults(int index) const {
@@ -438,6 +504,8 @@ QString Document::validate() const {
 }
 
 void Document::touch() {
+    // Inside a batch, the batch's end decides (see ChangeBatch).
+    if (_batchDepth > 0) return;
     const bool wasModified = _modified;
     _modified = true;
     if (!wasModified) emit modifiedChanged(true);

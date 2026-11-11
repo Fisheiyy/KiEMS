@@ -11,15 +11,20 @@
 #include "ResultsView.hpp"
 #include "SettingsPanel.hpp"
 #include "SimulationEditor.hpp"
+#include "SimulationSet.hpp"
+#include "SimulationSetPanel.hpp"
 #include "TestsPanel.hpp"
 
 #include "kiems/config.hpp"
 #include "kiems/excitation_postprocess.hpp"
+#include "kiems/path_utf8.hpp"
 
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QGroupBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
@@ -691,6 +696,175 @@ private slots:
     }
 
     // The run queue: one job at a time, in order, no duplicates, failures and cancels move on.
+    void simulationSets() {
+        // A memory bus: U1 drives DQ0-2 and DQ10 with their strobes DQS0/1; U2 receives them.
+        auto board = std::make_shared<kiems_gui::BoardData>();
+        board->footprints.push_back({"U1", "MCU", {{"1", "", "DQ0", "output"}, {"2", "", "DQ1", "output"},
+                                                   {"3", "", "DQ2", "output"}, {"4", "", "DQS0", "output"},
+                                                   {"5", "", "DQS1", "output"}, {"6", "", "GND", "power_in"},
+                                                   {"7", "", "DQ10", "output"}}});
+        board->footprints.push_back({"U2", "DRAM", {{"1", "", "DQ0", "input"}, {"2", "", "DQ1", "input"},
+                                                    {"3", "", "DQS0", "input"}, {"4", "", "DQS1", "input"},
+                                                    {"5", "", "GND", "power_in"}, {"6", "", "DQ10", "input"}}});
+        board->nets = {"DQ0", "DQ1", "DQ2", "DQ10", "DQS0", "DQS1", "GND"};
+        board->copperLayers = {"F.Cu", "In1.Cu", "In2.Cu", "B.Cu"};
+
+        Document document;
+        QString error;
+        QVERIFY(document.create(_directory.filePath("sets.g2esim"), _directory.filePath("board.kicad_pcb"), &error));
+        document.addSimulation("Lone", "GND");
+        document.setNetIncluded(0, "DQ0", true, 1);
+        const int set = document.addSimulationSet("Bus", "GND");
+        QVERIFY(document.isSimulationSet(set));
+        QVERIFY(!document.isSimulationSet(0));
+        const QString id = document.simulationSetId(set);
+        QCOMPARE(id.size(), 36);
+        QVERIFY(document.validate().isEmpty()); // a template with no nets parses
+
+        auto config = *kiems_gui::simulationSet(document, set);
+        QCOMPARE(kiems_gui::describeSimulationSet(config, board.get()).join('\n'),
+                 QString("Choose an excitation IC and a net name pattern."));
+        config.excitationFootprint = "U1";
+        config.netNamePattern = R"(DQ(\d+))";
+        config.additionalNetPatterns = {"DQS$1"};
+        config.phaseDegrees = 90;
+        config.amplitude = 0.4;
+        config.driveImpedance = 40;
+        config.probes = {kiems::SimulationSetProbe{"U2", true, 50, std::nullopt}, kiems::SimulationSetProbe{"U9"}};
+        kiems_gui::setSimulationSet(document, set, config);
+        QCOMPARE(kiems_gui::describeSimulationSet(config, board.get()),
+                 QStringList({"Generates 4 simulation(s).", "U9 has no pins on the matching nets."}));
+
+        const auto first = kiems_gui::regenerateSimulationSet(document, board.get(), set);
+        QVERIFY(first);
+        QCOMPARE(first->added, 4);
+        QList<int> generated = kiems_gui::generatedSimulations(document, set);
+        QStringList names;
+        for (int index : generated) names << document.simulationName(index);
+        QCOMPARE(names, QStringList({"Bus DQ0", "Bus DQ1", "Bus DQ2", "Bus DQ10"})); // numbers sort as numbers
+        QVERIFY2(document.validate().isEmpty(), qPrintable(document.validate()));
+
+        // Bus DQ0 drives U1's DQ0 pin, includes its strobe, and probes U2 on both.
+        const int dq0 = document.simulationIndex("Bus DQ0");
+        QCOMPARE(document.generatedBySet(dq0), id);
+        QCOMPARE(document.generatingTemplate(dq0), set);
+        QVERIFY(!document.isSimulationSet(dq0));
+        QVERIFY(!document.simulationJson(dq0)->contains("simulation_set"));
+        QVERIFY(*document.mainExcitation(dq0) == (PinRef{"U1", "1"}));
+        SimulationEditor editor(document, board.get(), dq0);
+        const auto excitation = *editor.excitation("U1", "1");
+        QCOMPARE(excitation.phaseDegrees(), 90.0);
+        QCOMPARE(*excitation.amplitude(), 0.4);
+        QCOMPARE(*editor.pinState("U1", "1").impedance, 40.0);
+        QCOMPARE(editor.netLevel("DQ0"), NetLevel::Simulated);
+        QCOMPARE(editor.netLevel("DQS0"), NetLevel::Simulated);
+        QCOMPARE(editor.netLevel("DQ1"), NetLevel::None);
+        for (const char* pin : {"1", "3"}) {
+            const auto state = editor.pinState("U2", pin);
+            QVERIFY(state.probed);
+            QVERIFY(state.absorbing);
+            QCOMPARE(*state.impedance, 50.0);
+        }
+        QVERIFY(!editor.pinState("U2", "2").probed);
+        // DQ2 has no strobe and DQ10 none either; each still drives its own pin.
+        QVERIFY(*document.mainExcitation(document.simulationIndex("Bus DQ10")) == (PinRef{"U1", "7"}));
+
+        // Regenerating an unchanged set changes nothing, and leaves a saved document saved.
+        QVERIFY(document.save(&error));
+        QSignalSpy changed(&document, &Document::changed);
+        const auto again = kiems_gui::regenerateSimulationSet(document, board.get(), set);
+        QCOMPARE(again->added + again->changed + again->removed, 0);
+        QCOMPARE(changed.count(), 0);
+        QVERIFY(!document.isModified());
+
+        // A narrower pattern drops what no longer matches and keeps the rest where they were.
+        config.netNamePattern = "DQ[01]";
+        config.additionalNetPatterns.clear();
+        kiems_gui::setSimulationSet(document, set, config);
+        changed.clear();
+        const auto narrower = kiems_gui::regenerateSimulationSet(document, board.get(), set);
+        QCOMPARE(narrower->removed, 2);
+        QCOMPARE(narrower->added, 0);
+        QCOMPARE(narrower->changed, 2); // no strobes now
+        QCOMPARE(changed.count(), 1);  // one change for the whole regeneration
+        QCOMPARE(kiems_gui::generatedSimulations(document, set).size(), 2);
+        QCOMPARE(SimulationEditor(document, board.get(), document.simulationIndex("Bus DQ0")).netLevel("DQS0"),
+                 NetLevel::None);
+
+        // Listed nets, duplicates and unknown names ignored.
+        config.netSelectionMode = kiems::SimulationSetNetSelectionMode::List;
+        config.netNames = {"DQ2", "DQ2", "NOPE"};
+        config.excitationDuration = 2e-9;
+        kiems_gui::setSimulationSet(document, set, config);
+        kiems_gui::regenerateSimulationSet(document, board.get(), set);
+        generated = kiems_gui::generatedSimulations(document, set);
+        QCOMPARE(generated.size(), 1);
+        QCOMPARE(document.simulationName(generated[0]), QString("Bus DQ2"));
+        QCOMPARE(*document.mainExcitationDuration(generated[0]), 2e-9);
+
+        // A bad pattern says why, and generates nothing.
+        config.netSelectionMode = kiems::SimulationSetNetSelectionMode::RegularExpression;
+        config.netNamePattern = "DQ(";
+        QVERIFY(kiems_gui::describeSimulationSet(config, board.get()).first().startsWith("Invalid net name pattern"));
+        QVERIFY(kiems_gui::expandSimulationSet(config, *board).isEmpty());
+
+        // Without a board there's nothing to match, so nothing changes.
+        QVERIFY(!kiems_gui::regenerateSimulationSet(document, nullptr, set));
+
+        // The panel edits the template's set.
+        // Inside a parent that's never shown, so showing the panel doesn't open a window.
+        QWidget host;
+        kiems_gui::SimulationSetPanel panel(&document, &host);
+        panel.setBoard(board);
+        panel.setSimulation(0);
+        QVERIFY(panel.isHidden()); // not a set
+        panel.setSimulation(set);
+        QVERIFY(!panel.isHidden());
+        panel.findChild<QComboBox*>("selectionMode")->setCurrentIndex(0);
+        QCOMPARE(kiems_gui::simulationSet(document, set)->netSelectionMode,
+                 kiems::SimulationSetNetSelectionMode::RegularExpression);
+        auto* pattern = panel.findChild<QLineEdit*>("pattern");
+        pattern->setText("DQ1|DQ10");
+        emit pattern->editingFinished();
+        QCOMPARE(kiems_gui::simulationSet(document, set)->netNamePattern, std::string("DQ1|DQ10"));
+        QCOMPARE(panel.findChild<QLabel*>("summary")->text(), QString("Generates 2 simulation(s).\nU9 has no pins on the matching nets."));
+        panel.findChild<QPushButton*>("addProbe")->click();
+        QCOMPARE(kiems_gui::simulationSet(document, set)->probes.size(), std::size_t(3));
+        QCOMPARE(panel.findChildren<QGroupBox*>().size(), 1 + 3); // the set's own box and one per probe
+
+        // A generated name holds the net's, often a KiCad hierarchical "/sheet/NET": its output folder
+        // must still be one folder, which on Windows takes escaping.
+        const auto folder = [](const std::string& name) {
+            return QString::fromStdU16String(kiems::simulationDirectoryName(name).u16string());
+        };
+#ifdef _WIN32
+        QCOMPARE(folder("USB /U1D+"), QString("USB %2FU1D+"));
+        QCOMPARE(folder("a: b?"), QString("a%3A b%3F"));
+        QCOMPARE(folder("50%"), QString("50%25"));
+        QCOMPARE(folder("tail. "), QString("tail%2E%20"));
+        QCOMPARE(folder("con.txt"), QString("%63on.txt"));
+        QCOMPARE(folder("COM3"), QString("%43OM3"));
+        QCOMPARE(folder("COM10"), QString("COM10"));
+        for (const char* name : {"USB /U1D+", "a: b?", "50%", "tail. ", "con.txt", "plain"}) {
+            QCOMPARE(kiems::simulationNameFromDirectory(kiems::simulationDirectoryName(name)), std::string(name));
+        }
+        QVERIFY(document.resultsDir(generated[0]).endsWith("ems/results/Bus DQ2"));
+        const int hierarchical = document.addSimulation("Set /sheet/NET", "GND");
+        QVERIFY(document.simulationDir(hierarchical).endsWith("ems/simulation/Set %2Fsheet%2FNET"));
+        document.removeSimulation(hierarchical);
+#else
+        QCOMPARE(folder("USB /U1D+"), QString("USB /U1D+"));
+#endif
+
+        // Renaming the template renames what it generates.
+        document.renameSimulation(set, "Data");
+        kiems_gui::regenerateSimulationSet(document, board.get(), set);
+        names.clear();
+        for (int index : kiems_gui::generatedSimulations(document, set)) names << document.simulationName(index);
+        QCOMPARE(names, QStringList({"Data DQ1", "Data DQ10"}));
+        QVERIFY2(document.validate().isEmpty(), qPrintable(document.validate()));
+    }
+
     void jobQueue() {
         using kiems_gui::Job;
         kiems_gui::JobQueue queue;

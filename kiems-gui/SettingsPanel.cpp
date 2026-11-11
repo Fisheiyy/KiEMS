@@ -1,6 +1,7 @@
 #include "SettingsPanel.hpp"
 
 #include "Document.hpp"
+#include "SimulationSet.hpp"
 
 #include <QCheckBox>
 #include <QFormLayout>
@@ -46,9 +47,26 @@ SettingsPanel::SettingsPanel(Document* document, QWidget* parent) : QWidget(pare
     _excitationDuration->setMinimum(0);
     _excitationDuration->setToolTip(tr("The main excitation's pulse window: how long a stimulus the results' "
                                        "time-domain responses are shown for."));
-    _bindings.emplace_back(_excitationDuration, [this] { return _document->mainExcitationDuration(_simulation); });
+    // A Simulation Set's template has no excitation of its own: its duration is the set's, which
+    // its generated simulations take.
+    _bindings.emplace_back(_excitationDuration, [this]() -> std::optional<double> {
+        if (const auto set = simulationSet(*_document, _simulation)) {
+            if (set->excitationDuration) return set->excitationDuration;
+            for (int generated : generatedSimulations(*_document, _simulation)) {
+                if (const auto duration = _document->mainExcitationDuration(generated)) return duration;
+            }
+            return std::nullopt;
+        }
+        return _document->mainExcitationDuration(_simulation);
+    });
     connect(_excitationDuration, &QuantityEdit::valueEdited, this, [this](std::optional<double> value) {
-        if (value && _simulation >= 0) _document->setMainExcitationDuration(_simulation, *value);
+        if (!value || _simulation < 0) return;
+        if (auto set = simulationSet(*_document, _simulation)) {
+            set->excitationDuration = *value;
+            setSimulationSet(*_document, _simulation, *set);
+        } else {
+            _document->setMainExcitationDuration(_simulation, *value);
+        }
     });
     _eyeDrawCount = simulationField(Kind::Integer, "/eye_draw_count",
                                     tr("How many random draws of the adversarial signals' timing an eye's noisy "
@@ -185,7 +203,15 @@ void SettingsPanel::refresh() {
     for (const auto& [field, read] : _bindings) field->refreshValue(open ? read() : std::nullopt);
 
     // Every main excitation's window at once; differing ones show as Mixed until one is entered.
-    const QList<double> durations = haveSimulation ? _document->mainExcitationDurations(_simulation) : QList<double>();
+    // A set's template shows its generated simulations' (see the binding above).
+    QList<double> durations;
+    if (haveSimulation && _document->isSimulationSet(_simulation)) {
+        for (int generated : generatedSimulations(*_document, _simulation)) {
+            durations += _document->mainExcitationDurations(generated);
+        }
+    } else if (haveSimulation) {
+        durations = _document->mainExcitationDurations(_simulation);
+    }
     const bool mixed = std::any_of(durations.begin(), durations.end(), [&](double d) { return d != durations.first(); });
     _excitationDuration->setEnabled(!durations.isEmpty());
     if (mixed) _excitationDuration->refreshValue(std::nullopt);
