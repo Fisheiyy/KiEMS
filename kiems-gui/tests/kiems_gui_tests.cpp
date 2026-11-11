@@ -202,6 +202,7 @@ private slots:
 
         document.setSimulationValue(0, "/edge_terminated_nets", nlohmann::json::array({"CLK"}));
         document.setSimulationValue(0, "/is_differential_pair", true);
+        document.setSimulationValue(0, "/terminate_ground_at_cut", true);
 
         // The main excitation's duration, kept when another pin is picked.
         document.setMainExcitationDuration(0, 2e-9);
@@ -227,6 +228,8 @@ private slots:
         QVERIFY(!simulation.contains("eye_test"));
         QVERIFY(simulation.contains("edge_terminated_nets"));
         QVERIFY(simulation["is_differential_pair"].get<bool>());
+        QVERIFY(simulation["terminate_ground_at_cut"].get<bool>());
+        QVERIFY(reopened.simulationValue(0, "/terminate_ground_at_cut").get<bool>());
     }
 
     void eyePresets() {

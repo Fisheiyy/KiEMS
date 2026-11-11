@@ -2502,6 +2502,8 @@ static kiems::EyeAggressor eyeTestTone(const std::vector<double>& frequencies, d
 - (void)testGroundIsEdgeTerminatedAlongTheCutButNotTheRealEdge {
     // A 40x20 mm board with ground on B.Cu right up to every edge, and a short signal near the left
     // edge whose 3 mm hull leaves a cutout of x 0..13, y 6..14: real edge on the left, cut elsewhere.
+    // Ground is terminated either by naming its net or through terminateGround, which needs no name.
+    for (const bool byName : {true, false}) {
     const kiems::SlicingConfig slicing{
         .hullPadding = 3.0 * kSimUnitsPerMm,
         .viaEdgeDistance = 0.5 * kSimUnitsPerMm,
@@ -2512,7 +2514,8 @@ static kiems::EyeAggressor eyeTestTone(const std::vector<double>& frequencies, d
         .viaClearance = 200,
         .pixelSize = 5,
         .layerNames = {"F.Cu", "B.Cu"},
-        .edgeTerminatedNets = {"GND"},
+        .edgeTerminatedNets = byName ? std::vector<std::string>{"GND"} : std::vector<std::string>{},
+        .terminateGround = !byName,
         .edgeTerminationWidth = 0.3 * kSimUnitsPerMm,
     };
     libkicad::BoardGeometry geometry;
@@ -2536,6 +2539,7 @@ static kiems::EyeAggressor eyeTestTone(const std::vector<double>& frequencies, d
     const double mm2 = kSimUnitsPerMm * kSimUnitsPerMm;
     XCTAssertEqualWithAccuracy(area / mm2, 0.3 * (2 * 9.7 + 2) + M_PI / 2 * (3 * 3 - 2.7 * 2.7), 0.05);
     XCTAssertGreaterThanOrEqual(xMin, 0.29 * kSimUnitsPerMm);
+    }
 }
 
 - (void)testSliceBoardForSimulationCutsNPTHHolesFromPreviewOnly {
@@ -3368,6 +3372,17 @@ static std::expected<kiems::EMSConfig, std::string> parseConfigJSON(const nlohma
     const auto custom = unknown.get<kiems::SimulationConfig>();
     XCTAssertTrue(custom.eyeTest().standard == kiems::EyeMaskStandard::Custom);
     XCTAssertTrue(custom.eyeTest().mask == test.mask);
+}
+
+- (void)testTerminateGroundAtCutRoundTripsAndDefaultIsOmitted {
+    kiems::SimulationConfig sim = makeSyntheticConfig().simulations().front();
+    XCTAssertFalse(sim.terminateGroundAtCut());
+    XCTAssertFalse(nlohmann::json(sim).contains("terminate_ground_at_cut"));
+    sim.setTerminateGroundAtCut(true);
+    const nlohmann::json json = sim;
+    XCTAssertTrue(json.at("terminate_ground_at_cut").get<bool>());
+    XCTAssertTrue(json.get<kiems::SimulationConfig>().terminateGroundAtCut());
+    XCTAssertTrue(kiems::SlicingConfig::from(sim, makeSyntheticConfig()).terminateGround);
 }
 
 // InvolvedNetConfig's legacy-vs-explicit pin-selection mode switch (see its own doc comment).

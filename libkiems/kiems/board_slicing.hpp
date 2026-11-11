@@ -280,6 +280,9 @@ struct SlicingConfig {
     /// gets a SlicedBoard::edgeTerminationLoops entry wherever it lies within edgeTerminationWidth of
     /// the cut, except where the cut follows the board's real edge.
     std::vector<std::string> edgeTerminatedNets;
+    /// SimulationConfig::terminateGroundAtCut(): every ground CopperPolygon is terminated as if its
+    /// net were in edgeTerminatedNets.
+    bool terminateGround = false;
     /// Width of that band inward from the cut, in simulation units -- the grid's maximum cell size,
     /// so the band always covers at least one column of Yee edges.
     double edgeTerminationWidth = 0;

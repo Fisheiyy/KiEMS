@@ -44,6 +44,7 @@ private:
     QuantityEdit* _excitationDuration;
     QuantityEdit* _eyeDrawCount;
     QCheckBox* _sharedClock;
+    QCheckBox* _terminateGround;
 
     QGroupBox* _documentGroup;
     QuantityEdit* _frequencyStart;

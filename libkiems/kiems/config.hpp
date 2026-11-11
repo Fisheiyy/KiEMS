@@ -1401,6 +1401,12 @@ public:
     const std::vector<std::string>& edgeTerminatedNets() const { return _edgeTerminatedNets; }
     std::vector<std::string>& edgeTerminatedNets() { return _edgeTerminatedNets; }
 
+    /// Whether the ground net's copper is edge-terminated where the cut crosses it, as if it were
+    /// in edgeTerminatedNets() -- whatever the ground net is called, net class included. Off by
+    /// default; JSON "terminate_ground_at_cut", written only when on.
+    bool terminateGroundAtCut() const { return _terminateGroundAtCut; }
+    void setTerminateGroundAtCut(bool value) { _terminateGroundAtCut = value; }
+
     std::vector<ExcitationConfig>& excitations() { return _excitations; }
     const std::vector<ExcitationConfig>& excitations() const { return _excitations; }
     std::vector<HullCutPortConfig>& hullCutPorts() { return _hullCutPorts; }
@@ -1464,6 +1470,7 @@ private:
     EyeTestConfig _eyeTest;
     bool _isDifferentialPair = false;
     std::vector<std::string> _edgeTerminatedNets;
+    bool _terminateGroundAtCut = false;
     std::vector<IncludedComponentConfig> _includedComponents;
     std::vector<ExcitationConfig> _excitations;
     std::vector<HullCutPortConfig> _hullCutPorts;

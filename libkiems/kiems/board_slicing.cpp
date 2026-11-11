@@ -266,6 +266,7 @@ SlicingConfig SlicingConfig::from(const SimulationConfig& sim, const EMSConfig& 
         .pixelSize = config.pixelSize(),
         .layerNames = std::move(layerNames),
         .edgeTerminatedNets = sim.edgeTerminatedNets(),
+        .terminateGround = sim.terminateGroundAtCut(),
         .edgeTerminationWidth = config.grid().max(),
     };
 }
@@ -803,15 +804,16 @@ std::expected<SlicedBoard, std::string> sliceBoardForSimulation(
     result.failedStitchingViaAttempts = std::move(stitching.failedAttempts);
 
     // Edge terminations: each terminated net's copper within one termination width of the cut.
-    if (!slicing.edgeTerminatedNets.empty() && slicing.edgeTerminationWidth > 0) {
+    if ((!slicing.edgeTerminatedNets.empty() || slicing.terminateGround) && slicing.edgeTerminationWidth > 0) {
         std::unordered_set<NetName, NetNameHash> terminated;
         for (const std::string& net : slicing.edgeTerminatedNets) {
             if (!net.empty()) terminated.insert(NetName(net)); // "" is a UI row with no net chosen yet
         }
         std::vector<libkicad::CopperPolygon> terminatedCopper;
         for (const auto* source : {&involvedCopper, &geometryOnlyCopper, &groundCopper}) {
+            const bool wholeSource = slicing.terminateGround && source == &groundCopper;
             for (const libkicad::CopperPolygon& polygon : *source) {
-                if (terminated.contains(NetName(polygon.netName))) terminatedCopper.push_back(polygon);
+                if (wholeSource || terminated.contains(NetName(polygon.netName))) terminatedCopper.push_back(polygon);
             }
         }
         const PolygonSet cutBand = differencePolygons(

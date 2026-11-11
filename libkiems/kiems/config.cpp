@@ -991,6 +991,9 @@ void to_json(nlohmann::json& j, const SimulationConfig& p) {
     if (!p._edgeTerminatedNets.empty()) {
         j["edge_terminated_nets"] = p._edgeTerminatedNets;
     }
+    if (p._terminateGroundAtCut) {
+        j["terminate_ground_at_cut"] = true;
+    }
     if (!p._includedComponents.empty()) {
         j["included_components"] = p._includedComponents;
     }
@@ -1033,6 +1036,7 @@ void from_json(const nlohmann::json& j, SimulationConfig& p) {
     p._eyeTest = j.value("eye_test", def._eyeTest);
     p._isDifferentialPair = j.value("is_differential_pair", def._isDifferentialPair);
     p._edgeTerminatedNets = j.value("edge_terminated_nets", std::vector<std::string>{});
+    p._terminateGroundAtCut = j.value("terminate_ground_at_cut", def._terminateGroundAtCut);
     p._includedComponents = j.value("included_components", std::vector<IncludedComponentConfig>{});
     p._excitations = j.value("excitations", std::vector<ExcitationConfig>{});
     p._hullCutPorts = j.value("hull_cut_ports", std::vector<HullCutPortConfig>{});

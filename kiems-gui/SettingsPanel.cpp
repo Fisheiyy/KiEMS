@@ -60,6 +60,15 @@ SettingsPanel::SettingsPanel(Document* document, QWidget* parent) : QWidget(pare
     connect(_sharedClock, &QCheckBox::toggled, this, [this](bool on) {
         if (_simulation >= 0) _document->setSimulationValue(_simulation, "/adversarial_shared_clock", on);
     });
+    _terminateGround = new QCheckBox(tr("Absorb the ground pour where the cut crosses it"));
+    _terminateGround->setToolTip(
+        tr("Terminates the ground pour along the simulated area's edge, wherever that edge cuts through the "
+           "board rather than following its real outline. A cut pour otherwise rings like a patch antenna, "
+           "which puts false resonances in the results and makes runs much longer."));
+    connect(_terminateGround, &QCheckBox::toggled, this, [this](bool on) {
+        if (_simulation >= 0) _document->setSimulationValue(_simulation, "/terminate_ground_at_cut", on);
+    });
+    simulationForm->addRow(_terminateGround);
     simulationForm->addRow(tr("Stitching inset:"), _viaEdgeDistance);
     simulationForm->addRow(tr("Stitching spacing:"), _viaSpacing);
     simulationForm->addRow(tr("Excitation duration:"), _excitationDuration);
@@ -188,6 +197,11 @@ void SettingsPanel::refresh() {
         const QSignalBlocker blocker(_sharedClock);
         _sharedClock->setChecked(haveSimulation &&
                                  _document->simulationValue(_simulation, "/adversarial_shared_clock").get<bool>());
+    }
+    {
+        const QSignalBlocker blocker(_terminateGround);
+        _terminateGround->setChecked(haveSimulation &&
+                                     _document->simulationValue(_simulation, "/terminate_ground_at_cut").get<bool>());
     }
 
     // What the frequency range implies for the mesh and margin -- libkiems' own rules, shown so the

@@ -51,6 +51,7 @@ const nlohmann::json& simulationDefaults() {
         {"adversarial_shared_clock", false},
         {"is_differential_pair", false},
         {"edge_terminated_nets", nlohmann::json::array()},
+        {"terminate_ground_at_cut", false},
         {"eye_test",
          {{"standard", "custom"}, {"signal_level", 1.0}, {"mask_x1", 0.0}, {"mask_x2", 0.0}, {"mask_y1", 0.0},
           {"mask_y2", 0.0}}},
@@ -61,7 +62,8 @@ const nlohmann::json& simulationDefaults() {
 /// Keys SimulationConfig's to_json() leaves out while they hold their default.
 bool omittedAtDefault(const std::string& key) {
     return key == "eye_bit_rate" || key == "eye_draw_count" || key == "adversarial_shared_clock" ||
-           key == "is_differential_pair" || key == "edge_terminated_nets" || key == "eye_test";
+           key == "is_differential_pair" || key == "edge_terminated_nets" || key == "terminate_ground_at_cut" ||
+           key == "eye_test";
 }
 
 /// Numbers compare by value, so 64 and 64.0 (or a document's 1500 and the default 1500.0) match.

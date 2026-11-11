@@ -115,8 +115,7 @@ Inspector::Inspector(Document* document, QWidget* parent) : QWidget(parent), _do
     _edgeNets = new QListWidget;
     _edgeNets->setMaximumHeight(90);
     _edgeNets->setToolTip(tr("Nets that run off the simulated area are terminated in their impedance at its edge "
-                             "rather than left open. Add the ground net when its pour is cut: a cut pour rings "
-                             "as a patch and puts false resonances in the results."));
+                             "rather than left open. The ground pour has its own switch in the Settings tab."));
     _edgeNetPicker = new QComboBox;
     _edgeNetPicker->setEditable(true);
     _edgeNetPicker->setInsertPolicy(QComboBox::NoInsert);
