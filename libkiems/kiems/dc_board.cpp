@@ -62,6 +62,9 @@ void to_json(nlohmann::json& j, const AnalysisConfig& config) {
         j["sense"] = {{"footprint", config.sense->footprint}, {"pin", config.sense->pin}, {"voltage", config.sense->value}};
     }
     if (config.options.sharedPartLoads) j["load_pins"] = "shared";
+    if (config.options.refinementStudy) {
+        j["refinement_study"] = {{"tolerance", config.options.studyTolerance}, {"max_refinements", config.options.studyMaxRefinements}};
+    }
     if (config.limits.outerCurrentDensity) j["max_current_density_outer"] = *config.limits.outerCurrentDensity;
     if (config.limits.innerCurrentDensity) j["max_current_density_inner"] = *config.limits.innerCurrentDensity;
     if (config.limits.viaCurrent) j["max_via_current"] = *config.limits.viaCurrent;
@@ -100,6 +103,12 @@ void from_json(const nlohmann::json& j, AnalysisConfig& config) {
     config.options.platingMm = j.value("plating", defaults.platingMm);
     config.options.maxElementMm = j.value("max_element", defaults.maxElementMm);
     config.options.equipotentialLoadPads = j.value("load_pads", std::string("equipotential")) != "distributed";
+    config.options.refinementStudy = j.contains("refinement_study") && j["refinement_study"].is_object();
+    if (config.options.refinementStudy) {
+        const nlohmann::json& study = j["refinement_study"];
+        config.options.studyTolerance = study.value("tolerance", defaults.studyTolerance);
+        config.options.studyMaxRefinements = study.value("max_refinements", defaults.studyMaxRefinements);
+    }
     const auto limit = [&](const char* key) {
         return j.contains(key) && j[key].is_number() ? std::optional(j[key].get<double>()) : std::nullopt;
     };

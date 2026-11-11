@@ -13,12 +13,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <numbers>
 #include <numeric>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 
 namespace kiems::dc {
 
@@ -421,18 +423,20 @@ double barrelResistance(double resistivity, double lengthMm, double drillMm, dou
     return resistivity * length / (std::numbers::pi * (drill + plating) * plating);
 }
 
-std::expected<Result, std::string> solve(const Problem& problem) {
-    const Options& options = problem.options;
-    const double rho = options.resistivity * (1 + 0.00393 * (options.temperatureC - 20));
-    const std::size_t layerCount = problem.layers.size();
-    if (layerCount == 0) return std::unexpected("There's no copper to analyse.");
+namespace {
 
-    using Clock = std::chrono::steady_clock;
-    const auto seconds = [](Clock::time_point since) { return std::chrono::duration<double>(Clock::now() - since).count(); };
-    // --- Mesh each layer, with its pads and annular rings on element edges.
+using Clock = std::chrono::steady_clock;
+double secondsSince(Clock::time_point since) { return std::chrono::duration<double>(Clock::now() - since).count(); }
+
+using Meshes = std::vector<LayerMesh>;
+
+/// Meshes each layer's copper, with nodes on its pads and annular rings.
+std::expected<Meshes, std::string> meshProblem(const Problem& problem) {
+    const Options& options = problem.options;
+    const std::size_t layerCount = problem.layers.size();
+    const auto seconds = secondsSince;
     std::vector<Cu::PolygonSet> copper(layerCount);
-    std::vector<LayerMesh> meshes(layerCount);
-    std::vector<int> nodeOffset(layerCount + 1, 0);
+    Meshes meshes(layerCount);
     for (std::size_t l = 0; l < layerCount; ++l) {
         copper[l] = cleanOutline(Cu::unionPolygons(problem.layers[l].copper));
         // A node at each pad's corners and centre, and around each ring.
@@ -484,8 +488,45 @@ std::expected<Result, std::string> solve(const Problem& problem) {
                         std::to_string(meshes[l].triangles.size()) + " elements, " + std::to_string(area) + " mm^2 of copper, in " +
                         std::to_string(seconds(started)) + " s");
         }
-        nodeOffset[l + 1] = nodeOffset[l] + static_cast<int>(meshes[l].nodes.size());
     }
+    return meshes;
+}
+
+/// Splits every element into four at its edges' midpoints: the same copper at half the element
+/// size, with every node of `mesh` kept (so the meshes of a study nest).
+LayerMesh subdivide(const LayerMesh& mesh) {
+    LayerMesh out;
+    out.nodes = mesh.nodes;
+    out.triangles.reserve(mesh.triangles.size() * 4);
+    std::unordered_map<std::uint64_t, int> midpoints;
+    midpoints.reserve(mesh.triangles.size() * 2);
+    const auto midpoint = [&](int a, int b) {
+        const std::uint64_t key = (static_cast<std::uint64_t>(std::min(a, b)) << 32) | static_cast<std::uint32_t>(std::max(a, b));
+        const auto [it, added] = midpoints.emplace(key, static_cast<int>(out.nodes.size()));
+        if (added) {
+            const Cu::Position &p = mesh.nodes[static_cast<std::size_t>(a)], &q = mesh.nodes[static_cast<std::size_t>(b)];
+            out.nodes.emplace_back((p.x() + q.x()) / 2, (p.y() + q.y()) / 2);
+        }
+        return it->second;
+    };
+    for (const auto& t : mesh.triangles) {
+        const int ab = midpoint(t[0], t[1]), bc = midpoint(t[1], t[2]), ca = midpoint(t[2], t[0]);
+        out.triangles.push_back({t[0], ab, ca});
+        out.triangles.push_back({ab, t[1], bc});
+        out.triangles.push_back({ca, bc, t[2]});
+        out.triangles.push_back({ab, bc, ca});
+    }
+    return out;
+}
+
+/// Solves `problem` on `meshes`, one per layer.
+std::expected<Result, std::string> solveOnMeshes(const Problem& problem, const Meshes& meshes) {
+    const Options& options = problem.options;
+    const double rho = options.resistivity * (1 + 0.00393 * (options.temperatureC - 20));
+    const std::size_t layerCount = problem.layers.size();
+    const auto seconds = secondsSince;
+    std::vector<int> nodeOffset(layerCount + 1, 0);
+    for (std::size_t l = 0; l < layerCount; ++l) nodeOffset[l + 1] = nodeOffset[l] + static_cast<int>(meshes[l].nodes.size());
     const int nodeCount = nodeOffset[layerCount];
     if (nodeCount == 0) return std::unexpected("There's no copper to analyse.");
 
@@ -779,6 +820,123 @@ std::expected<Result, std::string> solve(const Problem& problem) {
     return result;
 }
 
+/// The largest difference between the connected terminals' voltages.
+double worstDrop(const Result& result) {
+    double low = std::numeric_limits<double>::infinity(), high = -low;
+    for (const TerminalResult& t : result.terminals) {
+        if (!t.connected || std::isnan(t.voltage)) continue;
+        low = std::min(low, t.voltage);
+        high = std::max(high, t.voltage);
+    }
+    return high > low ? high - low : 0.0;
+}
+
+/// How far `finer` moved from `coarser`: the largest terminal voltage change as a fraction of the
+/// worst drop, or the power loss's relative change, whichever is more.
+double changeBetween(const Result& coarser, const Result& finer) {
+    double change = 0;
+    if (const double drop = worstDrop(finer); drop > 0) {
+        for (std::size_t t = 0; t < finer.terminals.size() && t < coarser.terminals.size(); ++t) {
+            const TerminalResult &a = coarser.terminals[t], &b = finer.terminals[t];
+            if (!a.connected || !b.connected || std::isnan(a.voltage) || std::isnan(b.voltage)) continue;
+            change = std::max(change, std::abs(b.voltage - a.voltage) / drop);
+        }
+    }
+    if (finer.powerLoss > 0) change = std::max(change, std::abs(finer.powerLoss - coarser.powerLoss) / finer.powerLoss);
+    return change;
+}
+
+/// Richardson extrapolation of the worst drop over the study's levels, whose element size halves each time.
+void extrapolate(RefinementStudy& study) {
+    const auto& levels = study.levels;
+    if (levels.size() < 2) return;
+    const double f2 = levels.back().worstDrop, f1 = levels[levels.size() - 2].worstDrop;
+    double order = 2; // linear elements: the potential converges as h^2 where the field is smooth
+    if (levels.size() >= 3) {
+        const double f0 = levels[levels.size() - 3].worstDrop;
+        const double e1 = f1 - f0, e2 = f2 - f1;
+        if (e1 * e2 > 0 && std::abs(e2) < std::abs(e1)) {
+            study.observedOrder = std::log2(e1 / e2);
+            order = study.observedOrder;
+        }
+    }
+    study.extrapolatedWorstDrop = f2 + (f2 - f1) / (std::pow(2.0, order) - 1);
+    if (f2 > 0) study.estimatedError = std::abs(study.extrapolatedWorstDrop - f2) / f2;
+}
+
+/// A study stops before a mesh would pass this many nodes.
+constexpr std::size_t kStudyNodeLimit = 1'500'000;
+
+} // namespace
+
+std::expected<Result, std::string> solve(const Problem& problem) {
+    if (problem.layers.empty()) return std::unexpected("There's no copper to analyse.");
+    auto meshes = meshProblem(problem);
+    if (!meshes) return std::unexpected(meshes.error());
+    std::size_t nodes = 0;
+    for (const LayerMesh& mesh : *meshes) nodes += mesh.nodes.size();
+    if (nodes == 0) return std::unexpected("There's no copper to analyse.");
+    const Options& options = problem.options;
+    if (!options.refinementStudy) return solveOnMeshes(problem, *meshes);
+
+    RefinementStudy study;
+    std::optional<Result> finest;
+    std::string stopped;
+    for (int level = 0;; ++level) {
+        const auto started = Clock::now();
+        if (level > 0) {
+            for (LayerMesh& mesh : *meshes) mesh = subdivide(mesh);
+        }
+        auto result = solveOnMeshes(problem, *meshes);
+        if (!result) {
+            if (!finest) return result;
+            stopped = "the mesh refined " + std::to_string(level) + " times couldn't be solved (" + result.error() + ")";
+            break;
+        }
+        RefinementLevel entry;
+        entry.refinements = level;
+        for (const LayerResult& layer : result->layers) {
+            entry.nodes += static_cast<int>(layer.nodes.size());
+            entry.elements += static_cast<int>(layer.triangles.size());
+            entry.maxCurrentDensity = std::max(entry.maxCurrentDensity, layer.maxCurrentDensity);
+        }
+        entry.unknowns = result->unknowns;
+        entry.worstDrop = worstDrop(*result);
+        entry.powerLoss = result->powerLoss;
+        if (finest) entry.change = changeBetween(*finest, *result);
+        entry.seconds = secondsSince(started);
+        study.levels.push_back(entry);
+        Cu::logInfo("DC: refinement " + std::to_string(level) + ": " + std::to_string(entry.nodes) + " nodes, worst drop " +
+                    std::to_string(entry.worstDrop * 1e3) + " mV, " + std::to_string(entry.powerLoss) + " W" +
+                    (std::isnan(entry.change) ? std::string() : ", changed " + std::to_string(entry.change * 100) + " %"));
+        finest = std::move(*result);
+        if (!std::isnan(entry.change) && entry.change <= options.studyTolerance) {
+            study.converged = true;
+            break;
+        }
+        if (level >= options.studyMaxRefinements) {
+            stopped = "it reached " + std::to_string(options.studyMaxRefinements) + " refinements";
+            break;
+        }
+        if (static_cast<std::size_t>(entry.nodes) * 4 > kStudyNodeLimit) {
+            stopped = "the next mesh would have passed " + std::to_string(kStudyNodeLimit) + " nodes";
+            break;
+        }
+    }
+    extrapolate(study);
+    if (!study.converged) {
+        std::string message = "The mesh refinement study stopped before converging: " + stopped + ".";
+        if (study.levels.size() >= 2) {
+            char change[32];
+            std::snprintf(change, sizeof change, "%.2g", study.levels.back().change * 100);
+            message += std::string(" The last refinement still moved the answer by ") + change + " %.";
+        }
+        finest->warnings.push_back(message);
+    }
+    finest->study = std::move(study);
+    return std::move(*finest);
+}
+
 void to_json(nlohmann::json& j, const Result& result) {
     const auto number = [](double value) { return std::isnan(value) ? nlohmann::json() : nlohmann::json(value); };
     j = nlohmann::json::object();
@@ -813,6 +971,26 @@ void to_json(nlohmann::json& j, const Result& result) {
                           {"min_voltage", std::isfinite(minimum) ? nlohmann::json(minimum) : nlohmann::json()},
                           {"max_voltage", std::isfinite(maximum) ? nlohmann::json(maximum) : nlohmann::json()},
                           {"max_current_density", l.maxCurrentDensity}});
+    }
+    if (result.study) {
+        const RefinementStudy& study = *result.study;
+        nlohmann::json list = nlohmann::json::array();
+        for (const RefinementLevel& level : study.levels) {
+            list.push_back({{"refinements", level.refinements},
+                            {"nodes", level.nodes},
+                            {"elements", level.elements},
+                            {"unknowns", level.unknowns},
+                            {"worst_drop", level.worstDrop},
+                            {"power_loss", level.powerLoss},
+                            {"max_current_density", level.maxCurrentDensity},
+                            {"change", number(level.change)},
+                            {"seconds", level.seconds}});
+        }
+        j["refinement_study"] = {{"converged", study.converged},
+                                 {"levels", std::move(list)},
+                                 {"extrapolated_worst_drop", number(study.extrapolatedWorstDrop)},
+                                 {"observed_order", number(study.observedOrder)},
+                                 {"estimated_error", number(study.estimatedError)}};
     }
 }
 

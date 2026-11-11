@@ -37,6 +37,31 @@ current.
   - **Solve.** The system is solved by conjugate gradients with an IC(0) preconditioner. This
     avoids an Eigen dependency, which the Xcode build has no include path for.
   - **Islands.** Copper with no source is found first and reported, not solved.
+  - **h-refinement study** (`Options::refinementStudy`; JSON `"refinement_study": {"tolerance":
+    0.01, "max_refinements": 3}`; the Power page's "Refine until it settles").
+    - **Method.** After solving on the CGAL mesh, every element is split into four at its edge
+      midpoints and the copper is solved again. The meshes nest, and each has half the element
+      size of the last.
+    - **Stopping rule.** It stops when no terminal's voltage moved by more than the tolerance
+      times the worst drop, and the power loss moved by less than that fraction of itself. It
+      also stops after `max_refinements`, or before a mesh would pass 1.5 M nodes.
+    - **Richardson extrapolation** estimates the worst drop on an infinitely fine mesh, and so the
+      error left. Three steadily converging levels give the observed order; otherwise it assumes
+      order 2, which is P1's rate where the field is smooth.
+    - **Peak current density isn't a convergence measure.** It is listed per level, but at a
+      re-entrant copper corner the true density is infinite, so it keeps rising with refinement.
+    - **Results.** `Result::study` lists each level. The result itself is the finest level's.
+      `kiems --dc` logs the table, and the Power page's Mesh tab lists it. The Mesh checkbox draws
+      the elements on the map.
+    - **Checks.** On the disc, the observed order is 1.94 and the extrapolation is within 0.1 % of
+      the analytic drop.
+    - **On StickHub** at a 0.5 % tolerance:
+      - +5V settles at the second split (2.9 k → 36 k nodes, 0.45 s). The worst drop goes
+        67.64 → 68.17 → 67.96 mV. It isn't monotonic, because a pad's merged node set grows as the
+        mesh refines.
+      - The GND return goes 4.596 → 4.661 → 4.679 mV, observed order 1.83, and extrapolates to
+        4.686 mV. Its finest solve, 257 k unknowns, takes 10 s: IC(0)-CG needs about twice the
+        iterations at each level.
 - **From a board: [`dc_board.hpp`](../libkiems/kiems/dc_board.hpp).**
   - Analyses live in the document's `dc_analyses` array.
   - `buildProblem()` takes the net's copper, plated holes and pads, and the stackup, from libkicad.

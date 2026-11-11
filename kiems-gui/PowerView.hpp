@@ -6,7 +6,8 @@
 // Before a run the map shows the rail's copper from the board; clicking one of its pads, before or
 // after, makes it a source or a load, or takes it out of the analysis. Under it all, the whole board:
 // its outline and every other net's copper on the layer shown, dimmed (Other nets turns it off), with
-// each net named on hover.
+// each net named on hover. Mesh draws the elements it was solved on; the Mesh tab lists each mesh
+// a refinement study solved, and how far the answer moved between them.
 #pragma once
 
 #include "BoardModel.hpp"
@@ -27,6 +28,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QSpinBox;
 class QTableWidget;
 class QTabWidget;
 class QTreeWidget;
@@ -82,6 +84,8 @@ public:
     void setLayer(int layer, bool onReturn = false);
     void setQuantity(Quantity quantity);
     void setLogScale(bool on);
+    /// Whether the elements' edges are drawn over the map.
+    void setShowMesh(bool on);
     void fit();
     /// Rings a spot (mm) on the map; nullopt clears it.
     void mark(std::optional<QPointF> point);
@@ -131,6 +135,7 @@ private:
     std::vector<PadShape> _pads;
     std::shared_ptr<const Backdrop> _backdrop;
     bool _showBoard = true;
+    bool _showMesh = false;
     QHash<QString, Role> _roles;
 };
 
@@ -182,12 +187,14 @@ private:
     QComboBox* _quantity;
     QCheckBox* _logScale;
     QCheckBox* _otherNets;
+    QCheckBox* _mesh;
     QPushButton* _runButton;
     PowerCanvas* _canvas;
     QTabWidget* _resultTabs;
     QTreeWidget* _pins;
     QTreeWidget* _vias;
     QListWidget* _problems;
+    QTreeWidget* _study;
 
     QLineEdit* _name;
     QComboBox* _net;
@@ -202,6 +209,9 @@ private:
     QuantityEdit* _temperature;
     QuantityEdit* _plating;
     QuantityEdit* _maxElement;
+    QCheckBox* _refine;
+    QuantityEdit* _studyTolerance;
+    QSpinBox* _studyRefinements;
     QComboBox* _loadPads;
     QuantityEdit* _outerLimit;
     QuantityEdit* _innerLimit;

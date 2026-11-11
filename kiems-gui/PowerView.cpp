@@ -19,6 +19,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTabWidget>
@@ -29,6 +30,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -224,6 +226,12 @@ void PowerCanvas::setLogScale(bool on) {
     update();
 }
 
+void PowerCanvas::setShowMesh(bool on) {
+    _showMesh = on;
+    _mapValid = false;
+    update();
+}
+
 void PowerCanvas::mark(std::optional<QPointF> point) {
     _mark = point;
     update();
@@ -361,19 +369,82 @@ void PowerCanvas::renderMap() {
         return;
     }
     if (_layer >= static_cast<int>(result().layers.size())) return;
-    QPainter painter(&_map);
-    painter.setClipRect(mapArea());
     const auto& layer = result().layers[static_cast<std::size_t>(_layer)];
+    // Filled pixel by pixel, at pixel centres, rather than polygon by polygon: a refined mesh has
+    // more elements than the map has pixels. The voltage is shaded across each element, as the
+    // solution varies across it; the current density is one value per element.
+    const QRectF area = mapArea();
+    const QRect clip = QRectF(area.topLeft() * ratio, area.size() * ratio).toAlignedRect() & _map.rect();
+    const bool shaded = _quantity == Quantity::Voltage;
+    std::array<QRgb, 1024> ramp{};
+    for (std::size_t i = 0; i < ramp.size(); ++i) ramp[i] = viridis(static_cast<double>(i) / (ramp.size() - 1)).rgb();
+    const QRgb unsolved = colorOf(kNaN).rgb();
+    const double span = _high - _low;
+    auto* bits = reinterpret_cast<QRgb*>(_map.bits());
+    const qsizetype stride = _map.bytesPerLine() / static_cast<qsizetype>(sizeof(QRgb));
+    const auto at = [&](int node) {
+        const Cu::Position& p = layer.nodes[static_cast<std::size_t>(node)];
+        return toScreen(p.x(), p.y()) * ratio;
+    };
+    const auto edge = [](const QPointF& a, const QPointF& b, double x, double y) {
+        return (b.x() - a.x()) * (y - a.y()) - (b.y() - a.y()) * (x - a.x());
+    };
     for (std::size_t e = 0; e < layer.triangles.size(); ++e) {
         const auto& t = layer.triangles[e];
-        const QPointF points[3] = {toScreen(layer.nodes[static_cast<std::size_t>(t[0])].x(), layer.nodes[static_cast<std::size_t>(t[0])].y()),
-                                   toScreen(layer.nodes[static_cast<std::size_t>(t[1])].x(), layer.nodes[static_cast<std::size_t>(t[1])].y()),
-                                   toScreen(layer.nodes[static_cast<std::size_t>(t[2])].x(), layer.nodes[static_cast<std::size_t>(t[2])].y())};
-        const QColor color = colorOf(valueOf(e));
-        // A hairline of the same colour closes the seams between neighbours.
-        painter.setPen(QPen(color, 0));
-        painter.setBrush(color);
-        painter.drawPolygon(points, 3);
+        std::array<QPointF, 3> p{at(t[0]), at(t[1]), at(t[2])};
+        std::array<double, 3> v{layer.voltage[static_cast<std::size_t>(t[0])], layer.voltage[static_cast<std::size_t>(t[1])],
+                                layer.voltage[static_cast<std::size_t>(t[2])]};
+        double twiceArea = edge(p[0], p[1], p[2].x(), p[2].y());
+        if (twiceArea == 0) continue;
+        if (twiceArea < 0) {
+            std::swap(p[1], p[2]);
+            std::swap(v[1], v[2]);
+            twiceArea = -twiceArea;
+        }
+        const int x0 = std::max(clip.left(), static_cast<int>(std::ceil(std::min({p[0].x(), p[1].x(), p[2].x()}) - 0.5)));
+        const int x1 = std::min(clip.right(), static_cast<int>(std::floor(std::max({p[0].x(), p[1].x(), p[2].x()}) - 0.5)));
+        const int y0 = std::max(clip.top(), static_cast<int>(std::ceil(std::min({p[0].y(), p[1].y(), p[2].y()}) - 0.5)));
+        const int y1 = std::min(clip.bottom(), static_cast<int>(std::floor(std::max({p[0].y(), p[1].y(), p[2].y()}) - 0.5)));
+        if (x0 > x1 || y0 > y1) continue;
+        const bool flat = !shaded || std::isnan(v[0]) || std::isnan(v[1]) || std::isnan(v[2]) || !(span > 0);
+        const QRgb color = !flat ? 0 : shaded && (std::isnan(v[0]) || std::isnan(v[1]) || std::isnan(v[2])) ? unsolved
+                                                                                                           : colorOf(valueOf(e)).rgb();
+        for (int y = y0; y <= y1; ++y) {
+            QRgb* row = bits + static_cast<qsizetype>(y) * stride;
+            const double py = y + 0.5;
+            for (int x = x0; x <= x1; ++x) {
+                const double px = x + 0.5;
+                const double w0 = edge(p[1], p[2], px, py), w1 = edge(p[2], p[0], px, py), w2 = edge(p[0], p[1], px, py);
+                if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+                if (flat) {
+                    row[x] = color;
+                    continue;
+                }
+                const double value = (w0 * v[0] + w1 * v[1] + w2 * v[2]) / twiceArea;
+                const double f = std::clamp((value - _low) / span, 0.0, 1.0);
+                row[x] = ramp[static_cast<std::size_t>(f * (ramp.size() - 1) + 0.5)];
+            }
+        }
+    }
+    if (_showMesh) {
+        QPainter painter(&_map);
+        painter.setClipRect(area);
+        painter.setPen(QPen(QColor(0, 0, 0, 110), 0));
+        QVector<QLineF> lines;
+        lines.reserve(static_cast<qsizetype>(std::min<std::size_t>(layer.triangles.size(), 400'000) * 3));
+        for (const auto& t : layer.triangles) {
+            const auto point = [&](int k) {
+                const Cu::Position& n = layer.nodes[static_cast<std::size_t>(t[static_cast<std::size_t>(k)])];
+                return toScreen(n.x(), n.y());
+            };
+            const QPointF a = point(0), b = point(1), c = point(2);
+            if (std::max({a.x(), b.x(), c.x()}) < area.left() || std::min({a.x(), b.x(), c.x()}) > area.right() ||
+                std::max({a.y(), b.y(), c.y()}) < area.top() || std::min({a.y(), b.y(), c.y()}) > area.bottom()) {
+                continue;
+            }
+            lines.append({QLineF(a, b), QLineF(b, c), QLineF(c, a)});
+        }
+        painter.drawLines(lines);
     }
 }
 
@@ -596,6 +667,9 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _otherNets = new QCheckBox(tr("Other nets"));
     _otherNets->setChecked(true);
     _otherNets->setToolTip(tr("Draw the rest of the board under the analysis: its outline and every other net's copper."));
+    _mesh = new QCheckBox(tr("Mesh"));
+    _mesh->setObjectName("mesh");
+    _mesh->setToolTip(tr("Draw the elements the copper was solved on."));
     _runButton = new QPushButton(tr("Run"));
     _runButton->setToolTip(tr("Solve the voltage and current across the net's copper."));
     bar->addWidget(_title);
@@ -604,12 +678,14 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     bar->addWidget(_quantity);
     bar->addWidget(_logScale);
     bar->addWidget(_otherNets);
+    bar->addWidget(_mesh);
     bar->addWidget(_runButton);
     leftLayout->addLayout(bar);
     auto* vertical = new QSplitter(Qt::Vertical);
     _canvas = new PowerCanvas;
     vertical->addWidget(_canvas);
     _resultTabs = new QTabWidget;
+    _resultTabs->setObjectName("results");
     _resultTabs->setUsesScrollButtons(false);
     _pins = new QTreeWidget;
     _pins->setObjectName("pins");
@@ -625,6 +701,15 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _resultTabs->addTab(_pins, tr("Pins"));
     _resultTabs->addTab(_vias, tr("Vias"));
     _resultTabs->addTab(_problems, tr("Problems"));
+    _study = new QTreeWidget;
+    _study->setObjectName("study");
+    _study->setHeaderLabels({tr("Mesh"), tr("Nodes"), tr("Elements"), tr("Worst drop"), tr("Power lost"), tr("Peak density"),
+                             tr("Moved"), tr("Time")});
+    _study->setToolTip(tr("The mesh each answer was solved on. With a refinement study, every element is split into four "
+                          "and the copper solved again until the pins' voltages and the power lost stop moving. The peak "
+                          "density keeps rising at copper corners, where it's truly unbounded, so it isn't a measure of "
+                          "convergence."));
+    _resultTabs->addTab(_study, tr("Mesh"));
     vertical->addWidget(_resultTabs);
     vertical->setStretchFactor(0, 3);
     vertical->setStretchFactor(1, 1);
@@ -718,6 +803,23 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     solverForm->addRow(tr("Temperature (°C):"), _temperature);
     solverForm->addRow(tr("Via plating:"), _plating);
     solverForm->addRow(tr("Largest element:"), _maxElement);
+    _refine = new QCheckBox(tr("Refine until it settles"));
+    _refine->setToolTip(tr("An h-refinement study: after solving, split every element into four and solve again, until "
+                           "no pin's voltage moves by more than the tolerance of the worst drop, nor the power lost by "
+                           "that fraction. Each refinement takes several times longer than the last."));
+    _studyTolerance = new QuantityEdit(Kind::Number);
+    _studyTolerance->setMinimum(0);
+    _studyTolerance->setToolTip(tr("How little the answer must move between refinements, in percent, to stop."));
+    _studyRefinements = new QSpinBox;
+    _studyRefinements->setRange(1, 5);
+    _studyRefinements->setToolTip(tr("The most times to split the elements; each split has four times as many."));
+    auto* studyRow = new QHBoxLayout;
+    studyRow->addWidget(_studyTolerance, 1);
+    studyRow->addWidget(new QLabel(tr("%, at most")));
+    studyRow->addWidget(_studyRefinements);
+    studyRow->addWidget(new QLabel(tr("times")));
+    solverForm->addRow(tr("Mesh study:"), _refine);
+    solverForm->addRow(tr("Settles within:"), studyRow);
     solverForm->addRow(tr("Load pads:"), _loadPads);
     _loadPins = new QComboBox;
     _loadPins->addItems({tr("Each draws its own"), tr("A part's pins share")});
@@ -794,6 +896,7 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     _logScale->setEnabled(false);
     connect(_logScale, &QCheckBox::toggled, _canvas, &PowerCanvas::setLogScale);
     connect(_otherNets, &QCheckBox::toggled, _canvas, &PowerCanvas::setShowBoard);
+    connect(_mesh, &QCheckBox::toggled, _canvas, &PowerCanvas::setShowMesh);
     const auto pointAt = [this](const QVariant& point, const QVariant& layer) {
         if (layer.isValid() && layer.toInt() >= 0) {
             _layer->setCurrentIndex(layer.toInt());
@@ -862,6 +965,15 @@ PowerView::PowerView(Document* document, QWidget* parent) : QWidget(parent), _do
     });
     connect(_maxElement, &QuantityEdit::valueEdited, this, [this](std::optional<double> v) {
         if (v && *v > 0) edit([&](kiems::dc::AnalysisConfig& a) { a.options.maxElementMm = *v / 1000; });
+    });
+    connect(_refine, &QCheckBox::toggled, this, [this](bool on) {
+        if (!_updating) edit([&](kiems::dc::AnalysisConfig& a) { a.options.refinementStudy = on; });
+    });
+    connect(_studyTolerance, &QuantityEdit::valueEdited, this, [this](std::optional<double> v) {
+        if (v && *v > 0) edit([&](kiems::dc::AnalysisConfig& a) { a.options.studyTolerance = *v / 100; });
+    });
+    connect(_studyRefinements, &QSpinBox::valueChanged, this, [this](int count) {
+        if (!_updating) edit([&](kiems::dc::AnalysisConfig& a) { a.options.studyMaxRefinements = count; });
     });
     const auto commitSense = [this] {
         if (_updating) return;
@@ -1092,6 +1204,11 @@ void PowerView::refreshSetup() {
         _temperature->refreshValue(analysis->options.temperatureC);
         _plating->refreshValue(analysis->options.platingMm * 1000);
         _maxElement->refreshValue(analysis->options.maxElementMm * 1000);
+        _refine->setChecked(analysis->options.refinementStudy);
+        _studyTolerance->refreshValue(analysis->options.studyTolerance * 100);
+        _studyRefinements->setValue(analysis->options.studyMaxRefinements);
+        _studyTolerance->setEnabled(analysis->options.refinementStudy);
+        _studyRefinements->setEnabled(analysis->options.refinementStudy);
         _loadPads->setCurrentIndex(analysis->options.equipotentialLoadPads ? 0 : 1);
         _loadPins->setCurrentIndex(analysis->options.sharedPartLoads ? 1 : 0);
         if (!_sensePart->hasFocus()) _sensePart->setText(analysis->sense ? QString::fromStdString(analysis->sense->footprint) : QString());
@@ -1126,6 +1243,7 @@ void PowerView::refreshResults() {
     _pins->clear();
     _vias->clear();
     _problems->clear();
+    _study->clear();
     if (!run) return;
     if (!run->ok()) {
         _problems->addItem(run->error);
@@ -1214,7 +1332,67 @@ void PowerView::refreshResults() {
             _problems->addItem(QString::fromStdString(run->analysis.referenceNet + ": " + warning));
         }
     }
-    for (QTreeWidget* tree : {_pins, _vias}) {
+    // Each mesh solved, the rail's and then its return's.
+    const auto listMeshes = [this](const QString& net, const kiems::dc::Result& result) {
+        auto* parent = new QTreeWidgetItem(_study);
+        const auto row = [](QTreeWidgetItem* item, const kiems::dc::RefinementLevel& level) {
+            item->setText(1, QString::number(level.nodes));
+            item->setText(2, QString::number(level.elements));
+            item->setText(3, QString("%1 mV").arg(level.worstDrop * 1e3, 0, 'f', 3));
+            item->setText(4, QString("%1 mW").arg(level.powerLoss * 1e3, 0, 'f', 2));
+            item->setText(5, QString("%1 A/mm²").arg(level.maxCurrentDensity, 0, 'f', 1));
+            item->setText(6, std::isnan(level.change) ? QString() : QString("%1 %").arg(level.change * 100, 0, 'g', 3));
+            item->setText(7, level.seconds > 0 ? QString("%1 s").arg(level.seconds, 0, 'f', 2) : QString());
+            for (int c = 1; c < 8; ++c) item->setTextAlignment(c, Qt::AlignRight | Qt::AlignVCenter);
+        };
+        if (!result.study) {
+            kiems::dc::RefinementLevel level;
+            for (const auto& layer : result.layers) {
+                level.nodes += static_cast<int>(layer.nodes.size());
+                level.elements += static_cast<int>(layer.triangles.size());
+                level.maxCurrentDensity = std::max(level.maxCurrentDensity, layer.maxCurrentDensity);
+            }
+            double low = std::numeric_limits<double>::infinity(), high = -low;
+            for (const auto& terminal : result.terminals) {
+                if (!terminal.connected || std::isnan(terminal.voltage)) continue;
+                low = std::min(low, terminal.voltage);
+                high = std::max(high, terminal.voltage);
+            }
+            level.worstDrop = high > low ? high - low : 0;
+            level.powerLoss = result.powerLoss;
+            row(parent, level);
+            parent->setText(0, tr("%1 (not refined)").arg(net));
+            return;
+        }
+        const kiems::dc::RefinementStudy& study = *result.study;
+        parent->setText(0, study.converged ? tr("%1: settled").arg(net) : tr("%1: still moving").arg(net));
+        if (!study.converged) parent->setForeground(0, QColor(0xd0, 0x3a, 0x2f));
+        for (const auto& level : study.levels) {
+            auto* item = new QTreeWidgetItem(parent);
+            item->setText(0, level.refinements == 0 ? tr("As meshed") : tr("Split %1×").arg(level.refinements));
+            row(item, level);
+        }
+        if (!std::isnan(study.extrapolatedWorstDrop)) {
+            auto* item = new QTreeWidgetItem(parent);
+            item->setText(0, tr("Extrapolated"));
+            item->setText(3, QString("%1 mV").arg(study.extrapolatedWorstDrop * 1e3, 0, 'f', 3));
+            item->setText(6, tr("%1 % left").arg(study.estimatedError * 100, 0, 'g', 2));
+            item->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
+            item->setTextAlignment(6, Qt::AlignRight | Qt::AlignVCenter);
+            item->setToolTip(0, std::isnan(study.observedOrder)
+                                    ? tr("Richardson extrapolation from the last two meshes, assuming the error falls as the "
+                                         "element size squared.")
+                                    : tr("Richardson extrapolation from the last three meshes, which converge at order %1.")
+                                          .arg(study.observedOrder, 0, 'f', 2));
+            QFont italic = item->font(0);
+            italic.setItalic(true);
+            for (int c = 0; c < 8; ++c) item->setFont(c, italic);
+        }
+        parent->setExpanded(true);
+    };
+    listMeshes(QString::fromStdString(run->analysis.net), run->result);
+    if (run->returnResult) listMeshes(QString::fromStdString(run->analysis.referenceNet), *run->returnResult);
+    for (QTreeWidget* tree : {_pins, _vias, _study}) {
         for (int c = 0; c < tree->columnCount(); ++c) tree->resizeColumnToContents(c);
     }
     _resultTabs->setTabText(2, _problems->count() > 0 ? tr("Problems (%1)").arg(_problems->count()) : tr("Problems"));
@@ -1259,6 +1437,11 @@ void PowerView::updateStatus() {
                            .arg(run->result.unknowns + (run->returnResult ? run->returnResult->unknowns : 0))
                            .arg(run->seconds, 0, 'f', 2)
                            .arg((run->result.powerLoss + (run->returnResult ? run->returnResult->powerLoss : 0)) * 1e3, 0, 'f', 1);
+        if (run->result.study) {
+            const bool settled = run->result.study->converged && (!run->returnResult || !run->returnResult->study ||
+                                                                  run->returnResult->study->converged);
+            text += settled ? tr("; mesh settled") : tr("; mesh still moving");
+        }
         if (run->senseShift && run->analysis.sense) {
             double regulator = 0;
             for (const auto& terminal : run->result.terminals) {

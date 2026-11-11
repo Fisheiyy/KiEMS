@@ -1106,11 +1106,39 @@ private slots:
         QVERIFY(view.currentRun() && view.currentRun()->ok());
         QCOMPARE(view.findChild<QTreeWidget*>("pins")->topLevelItemCount(), 4); // with the return's two
         QCOMPARE(view.findChild<QListWidget*>("problems")->count(), 3); // the three limits broken
+        auto* meshes = view.findChild<QTreeWidget*>("study");
+        QCOMPARE(meshes->topLevelItemCount(), 2); // the rail's mesh and the return's, unrefined
+        QCOMPARE(meshes->topLevelItem(0)->childCount(), 0);
         if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
             view.setAttribute(Qt::WA_DontShowOnScreen);
             view.show();
             view.grab().save(QDir(snapshots).filePath("power.png"));
         }
+
+        // A refinement study: kept in the document, and each mesh listed with the extrapolation.
+        auto studied = config();
+        studied.options.refinementStudy = true;
+        studied.options.studyTolerance = 0.001;
+        studied.options.studyMaxRefinements = 2;
+        kiems_gui::setPowerAnalysis(document, 0, studied);
+        QCOMPARE(document.documentValue("/dc_analyses")[0]["refinement_study"]["max_refinements"].get<int>(), 2);
+        QVERIFY(config().options == studied.options);
+        view.run();
+        QVERIFY(finished.wait(60000));
+        QVERIFY(view.currentRun()->result.study && view.currentRun()->returnResult->study);
+        const auto& levels = view.currentRun()->result.study->levels;
+        QVERIFY(levels.size() >= 2 && levels.size() <= 3);
+        QCOMPARE(levels[1].elements, 4 * levels[0].elements);
+        QCOMPARE(meshes->topLevelItemCount(), 2);
+        // Each level, and the extrapolation once there are two.
+        QCOMPARE(meshes->topLevelItem(0)->childCount(), static_cast<int>(levels.size()) + 1);
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            view.findChild<QTabWidget*>("results")->setCurrentWidget(meshes);
+            view.findChild<QCheckBox*>("mesh")->setChecked(true);
+            view.grab().save(QDir(snapshots).filePath("power_study.png"));
+            view.findChild<QCheckBox*>("mesh")->setChecked(false);
+        }
+        kiems_gui::setPowerAnalysis(document, 0, restored);
 
         // The report runs it again on the board, and fails it for the limits it breaks.
         QCOMPARE(kiems_gui::judgePowerAnalysis(nullptr).kind, kiems_gui::SimulationVerdict::Kind::NotRun);

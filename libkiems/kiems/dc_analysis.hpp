@@ -19,6 +19,8 @@
 
 #include <array>
 #include <expected>
+#include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,12 @@ struct Options {
     /// Whether a part's load pins share its current (dc::Terminal::package), letting the copper
     /// decide the split, rather than each drawing the current it's given.
     bool sharedPartLoads = false;
+    /// An h-refinement study: after solving on the mesh above, split every element into four and
+    /// solve again, until no terminal's voltage moves by more than `studyTolerance` of the worst
+    /// drop, nor the power loss by that fraction of itself -- or `studyMaxRefinements` splits on.
+    bool refinementStudy = false;
+    double studyTolerance = 0.01;
+    int studyMaxRefinements = 3;
 
     bool operator==(const Options&) const = default;
 };
@@ -121,6 +129,35 @@ struct TerminalResult {
     bool connected = false;
 };
 
+/// One mesh of an h-refinement study.
+struct RefinementLevel {
+    int refinements = 0; // times every element of the first mesh was split into four
+    int nodes = 0;
+    int elements = 0;
+    int unknowns = 0;
+    /// The largest difference between the terminals' voltages: the worst drop (or rise, on a return).
+    double worstDrop = 0;
+    double powerLoss = 0;
+    /// Not a convergence measure: at a copper corner the true density is infinite, so this keeps rising.
+    double maxCurrentDensity = 0;
+    /// How far the answer moved from the level before, as a fraction (see Options::studyTolerance);
+    /// NaN on the first.
+    double change = std::numeric_limits<double>::quiet_NaN();
+    double seconds = 0;
+};
+
+struct RefinementStudy {
+    std::vector<RefinementLevel> levels;
+    bool converged = false;
+    /// Richardson's estimate of the worst drop on an infinitely fine mesh, from the last levels.
+    double extrapolatedWorstDrop = std::numeric_limits<double>::quiet_NaN();
+    /// The order of convergence the last three levels show; NaN with fewer, or when they don't
+    /// converge steadily (2 is assumed for the extrapolation then).
+    double observedOrder = std::numeric_limits<double>::quiet_NaN();
+    /// |extrapolated - finest| / finest worst drop: the error left in the result.
+    double estimatedError = std::numeric_limits<double>::quiet_NaN();
+};
+
 struct Result {
     std::vector<LayerResult> layers;
     std::vector<BarrelResult> barrels;
@@ -129,10 +166,12 @@ struct Result {
     std::vector<std::string> warnings;
     int unknowns = 0;
     int iterations = 0;
+    /// When Options::refinementStudy is set: each mesh's answer. The result is the finest's.
+    std::optional<RefinementStudy> study;
 };
 
-/// Meshes and solves `problem`. Fails when nothing can be solved: no source on any copper, or no
-/// copper at all.
+/// Meshes and solves `problem` -- refining until it converges, with Options::refinementStudy. Fails
+/// when nothing can be solved: no source on any copper, or no copper at all.
 std::expected<Result, std::string> solve(const Problem& problem);
 
 /// The resistance of a plated barrel wall: rho L / (pi (d + p) p).

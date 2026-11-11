@@ -111,6 +111,43 @@ void disc() {
          "disc spreading drop, V");
 }
 
+void refinementStudy() {
+    // The disc again, from a coarse mesh: each split into four halves the elements, until the drop
+    // stops moving; the extrapolation lands on the analytic answer.
+    kiems::dc::Problem problem;
+    problem.layers.push_back({"F.Cu", kThickness, 0, {circle(0, 0, 10.5, 256)}});
+    problem.terminals.push_back(terminal("source", Kind::Source, 0, {circle(0, 0, 1, 256)}, 1.0));
+    problem.terminals.push_back(
+        terminal("load", Kind::Load, 0, {circle(0, 0, 10.5, 256), circle(0, 0, 10, 256, true)}, 1.0));
+    problem.options.maxElementMm = 2;
+    problem.options.refinementStudy = true;
+    problem.options.studyTolerance = 0.002;
+    problem.options.studyMaxRefinements = 4;
+    const auto result = kiems::dc::solve(problem);
+    check(result.has_value(), "refinement study solves" + (result ? std::string() : ": " + result.error()));
+    if (!result) return;
+    check(result->study.has_value(), "the study is reported");
+    if (!result->study) return;
+    const auto& study = *result->study;
+    check(study.levels.size() >= 2, "the study refines at least once");
+    check(study.converged, "the study converges to 0.2 %");
+    for (std::size_t k = 1; k < study.levels.size(); ++k) {
+        check(study.levels[k].elements == 4 * study.levels[k - 1].elements, "each level has four times the elements");
+        if (k >= 2) check(study.levels[k].change < study.levels[k - 1].change, "each refinement moves the answer less");
+    }
+    const double analytic = kSheet * std::log(10.0) / (2 * std::numbers::pi);
+    near(study.levels.back().worstDrop, 1.0 - result->terminals[1].voltage, 1e-12, "the result is the finest level's");
+    near(study.extrapolatedWorstDrop, analytic, 1e-3, "extrapolated disc drop, V");
+    check(std::abs(study.extrapolatedWorstDrop - analytic) <= std::abs(study.levels.back().worstDrop - analytic) + 1e-9,
+          "the extrapolation is at least as close as the finest mesh");
+    std::printf("  study: %zu levels, order %.2f, estimated error %.3g %%\n", study.levels.size(), study.observedOrder,
+                study.estimatedError * 100);
+
+    problem.options.refinementStudy = false;
+    const auto plain = kiems::dc::solve(problem);
+    check(plain && !plain->study, "no study unless asked for");
+}
+
 void via() {
     // Two 5 x 1 mm strips on layers 1.51 mm apart, overlapping at one 0.3 mm via, 1 A end to end.
     kiems::dc::Problem problem;
@@ -210,6 +247,7 @@ int main() {
     strip();
     distributedLoad();
     disc();
+    refinementStudy();
     via();
     islands();
     sharedPart();

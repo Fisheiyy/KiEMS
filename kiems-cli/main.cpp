@@ -623,6 +623,28 @@ int runDCAnalyses(const std::vector<std::string>& names, const std::filesystem::
         summary << analysis.name << ": " << result->unknowns << " unknowns, " << result->iterations
                 << " iterations, " << seconds << " s; " << result->powerLoss * 1e3 << " mW lost in the copper";
         logInfo(summary.str());
+        if (result->study) {
+            const dc::RefinementStudy& study = *result->study;
+            for (const dc::RefinementLevel& level : study.levels) {
+                std::ostringstream line;
+                line.precision(5);
+                line << "  mesh refined " << level.refinements << "x: " << level.nodes << " nodes, worst drop "
+                     << level.worstDrop * 1e3 << " mV, " << level.powerLoss * 1e3 << " mW";
+                if (!std::isnan(level.change)) line << ", moved " << level.change * 100 << " %";
+                line << " (" << level.seconds << " s)";
+                logInfo(line.str());
+            }
+            std::ostringstream line;
+            line.precision(5);
+            line << "  " << (study.converged ? "converged" : "NOT converged");
+            if (!std::isnan(study.extrapolatedWorstDrop)) {
+                line << "; extrapolated worst drop " << study.extrapolatedWorstDrop * 1e3 << " mV (about "
+                     << study.estimatedError * 100 << " % from the finest mesh";
+                if (!std::isnan(study.observedOrder)) line << ", observed order " << study.observedOrder;
+                line << ")";
+            }
+            logInfo(line.str());
+        }
         for (const dc::TerminalResult& terminal : result->terminals) {
             std::ostringstream line;
             line.precision(6);
