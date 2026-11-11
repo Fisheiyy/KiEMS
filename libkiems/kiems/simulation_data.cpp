@@ -1,5 +1,6 @@
 #include <set>
 #include "simulation_data.hpp"
+#include "path_utf8.hpp"
 
 #include <fstream>
 
@@ -170,7 +171,7 @@ SimulationPostprocessing generatePostprocessing(const SimulationData<SimulationS
 }
 
 std::filesystem::path simulationDataFile(const PathsConfig& paths, const std::string& simulationName) {
-    return paths.geometryDir / simulationName / "geometry.json";
+    return paths.geometryDir / simulationDirectoryName(simulationName) / "geometry.json";
 }
 
 std::expected<void, std::string> saveSimulationData(const SimulationData<SimulationStage::Grid>& data,

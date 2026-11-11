@@ -459,7 +459,7 @@ std::expected<void, std::string> clearStage(const std::filesystem::path& stageDi
         return {};
     }
     for (const std::string& simulation : simulations) {
-        if (auto cleared = clearDirectory(stageDirectory / pathFromUtf8(simulation), keep); !cleared) return cleared;
+        if (auto cleared = clearDirectory(stageDirectory / simulationDirectoryName(simulation), keep); !cleared) return cleared;
     }
     return {};
 }
@@ -471,7 +471,7 @@ std::expected<void, std::string> clearStage(const std::filesystem::path& stageDi
 /// underlying Postprocessor via PostprocessResult::postprocessorFor() -- see its doc comment.
 void saveAndRenderResults(const PostprocessResult& results, const Arguments& args) {
     for (const auto& simConfig : results.config().simulations()) {
-        const std::filesystem::path outDir = args.output() / simConfig.name();
+        const std::filesystem::path outDir = args.output() / simulationDirectoryName(simConfig.name());
         std::filesystem::create_directories(outDir);
 
         results.saveToFile(simConfig.name(), outDir);
@@ -489,7 +489,7 @@ void saveAndRenderResults(const PostprocessResult& results, const Arguments& arg
                 continue;
             }
             const std::map<std::int32_t, double> runDurations =
-                ExcitationPostprocessor::loadRunDurations(args.input() / simConfig.name(), simConfig);
+                ExcitationPostprocessor::loadRunDurations(args.input() / simulationDirectoryName(simConfig.name()), simConfig);
             // The eyes the results show, tested against the simulation's eye mask (eyes.json).
             saveEyeDiagrams(computeSimulationEyes(*post, simConfig, results.config().frequency(), runDurations),
                             simConfig.eyeTest(), outDir / "eyes.json");
@@ -647,7 +647,7 @@ std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std:
         copper::FieldFrameSeriesRequest request;
         request.path = package / ("port_" + std::to_string(excitedPortNumber) + "_" +
                                   std::to_string(capture->slots[simulationDirectory]) + ".h5");
-        request.simulationName = pathToUtf8(simulationDirectory.filename());
+        request.simulationName = simulationNameFromDirectory(simulationDirectory.filename());
         request.excitedPort = excitedPortNumber;
         request.boardZMin = -boardThickness * kSimulationUnitsToMetres;
         request.boardZMax = 0.0;

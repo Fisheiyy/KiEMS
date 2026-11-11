@@ -1,4 +1,5 @@
 #include "geometry_result.hpp"
+#include "path_utf8.hpp"
 
 #include <filesystem>
 
@@ -49,7 +50,7 @@ std::expected<GeometryResult, std::string> GeometryResult::build(EMSConfig confi
     std::size_t simIndex = 0;
     for (auto& simConfig : ownedConfig->simulations()) {
         logInfo("### Building geometry for simulation \"" + simConfig.name() + "\" ###");
-        if (auto dirResult = createDir(paths.geometryDir / simConfig.name()); !dirResult) {
+        if (auto dirResult = createDir(paths.geometryDir / simulationDirectoryName(simConfig.name())); !dirResult) {
             return std::unexpected(dirResult.error());
         }
 

@@ -1612,7 +1612,7 @@ void Simulation::addDumpBoxes() {
 
 std::expected<void, std::string> Simulation::run(std::int32_t excitedPortNumber) {
     logInfo("Starting simulation");
-    const std::filesystem::path simPath = _paths.simulationDir / _simConfig.name() / std::to_string(excitedPortNumber);
+    const std::filesystem::path simPath = _paths.simulationDir / simulationDirectoryName(_simConfig.name()) / std::to_string(excitedPortNumber);
     std::error_code dirEc;
     std::filesystem::create_directories(simPath, dirEc);
     if (dirEc) {
@@ -1663,7 +1663,7 @@ std::expected<void, std::string> Simulation::run(std::int32_t excitedPortNumber)
 }
 
 std::expected<void, std::string> Simulation::prepareRunDirectory(std::int32_t excitedPortNumber) {
-    const std::filesystem::path simPath = _paths.simulationDir / _simConfig.name() / std::to_string(excitedPortNumber);
+    const std::filesystem::path simPath = _paths.simulationDir / simulationDirectoryName(_simConfig.name()) / std::to_string(excitedPortNumber);
     std::error_code dirEc;
     std::filesystem::create_directories(simPath, dirEc);
     if (dirEc) {
@@ -2015,7 +2015,7 @@ void Simulation::writeRunDiagnostics(const std::filesystem::path& directory) con
 
 std::expected<Simulation::PortParameters, std::string> Simulation::getPortParameters(
     std::int32_t exIndex, const std::vector<double>& frequencies) {
-    const std::filesystem::path resultPath = _paths.simulationDir / _simConfig.name() / std::to_string(exIndex);
+    const std::filesystem::path resultPath = _paths.simulationDir / simulationDirectoryName(_simConfig.name()) / std::to_string(exIndex);
     const std::vector<std::complex<double>> naNPlaceholder(frequencies.size(),
                                                              std::complex<double>(std::numeric_limits<double>::quiet_NaN(),
                                                                                     std::numeric_limits<double>::quiet_NaN()));

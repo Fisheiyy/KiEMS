@@ -1,6 +1,8 @@
 // Constants used throughout the app. Ported from kiems/constants.py.
 #pragma once
 
+#include "path_utf8.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -19,9 +21,9 @@ inline const std::filesystem::path resultsDir = baseDir / "results";
 // Every simulation now builds/runs/reports independently (see the "board slicing + net-driven
 // ports and excitations" plan) -- these namespace the three directories above by
 // SimulationConfig::name() so multiple simulations' outputs never collide.
-inline std::filesystem::path simGeometryDir(const std::string& simName) { return geometryDir / simName; }
-inline std::filesystem::path simSimulationDir(const std::string& simName) { return simulationDir / simName; }
-inline std::filesystem::path simResultsDir(const std::string& simName) { return resultsDir / simName; }
+inline std::filesystem::path simGeometryDir(const std::string& simName) { return geometryDir / simulationDirectoryName(simName); }
+inline std::filesystem::path simSimulationDir(const std::string& simName) { return simulationDir / simulationDirectoryName(simName); }
+inline std::filesystem::path simResultsDir(const std::string& simName) { return resultsDir / simulationDirectoryName(simName); }
 
 inline const std::filesystem::path defaultConfigPath = "./simulation.json";
 

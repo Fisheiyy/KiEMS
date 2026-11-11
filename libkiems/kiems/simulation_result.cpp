@@ -1,4 +1,5 @@
 #include "simulation_result.hpp"
+#include "path_utf8.hpp"
 
 #include <optional>
 
@@ -125,7 +126,7 @@ std::expected<SimulationResult, std::string> SimulationResult::run(const Geometr
     // EMSConfig specifically so Simulation's constructor -- which needs a mutable SimulationConfig&
     // -- can be built here without GeometryResult itself exposing a public mutable accessor.
     for (auto& simConfig : geometry._config->simulations()) {
-        if (auto dirResult = createDir(geometry.paths().simulationDir / simConfig.name()); !dirResult) {
+        if (auto dirResult = createDir(geometry.paths().simulationDir / simulationDirectoryName(simConfig.name())); !dirResult) {
             return std::unexpected(dirResult.error());
         }
 
@@ -162,8 +163,8 @@ std::expected<SimulationResult, std::string> SimulationResult::run(const Geometr
             resultsData, generatePostprocessing(resultsData, frequencies));
 
         const std::shared_ptr<Postprocessor>& post = postprocessingData.postprocessing().postprocessor;
-        post->sparamToFile(geometry.paths().simulationDir / simConfig.name());
-        post->probeToFile(geometry.paths().simulationDir / simConfig.name());
+        post->sparamToFile(geometry.paths().simulationDir / simulationDirectoryName(simConfig.name()));
+        post->probeToFile(geometry.paths().simulationDir / simulationDirectoryName(simConfig.name()));
         postprocessors.emplace(simConfig.name(), post);
     }
 
@@ -179,10 +180,10 @@ std::expected<SimulationResult, std::string> SimulationResult::load(const Geomet
     std::map<std::string, std::shared_ptr<Postprocessor>> postprocessors;
     for (const auto& simConfig : geometry.config().simulations()) {
         auto post = std::make_shared<Postprocessor>(frequencies, simConfig);
-        if (auto result = post->loadSparams(inputDir / simConfig.name()); !result) {
+        if (auto result = post->loadSparams(inputDir / simulationDirectoryName(simConfig.name())); !result) {
             return std::unexpected(result.error());
         }
-        if (auto result = post->loadProbes(inputDir / simConfig.name()); !result) {
+        if (auto result = post->loadProbes(inputDir / simulationDirectoryName(simConfig.name())); !result) {
             return std::unexpected(result.error());
         }
         postprocessors.emplace(simConfig.name(), std::move(post));
