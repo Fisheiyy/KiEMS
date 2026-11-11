@@ -53,6 +53,8 @@ public:
     void showSimulation(const QString& title, const QString& simulationDirectory, const std::map<int, QString>& portNames);
     /// Closes the open series (before a run replaces them).
     void close();
+    /// The simulation directory whose fields are shown; empty before the first.
+    QString simulationDirectory() const { return _simulationDirectory; }
     /// The board drawn over the fields for orientation: its outline and top copper.
     void setBoard(std::shared_ptr<const BoardData> board);
 

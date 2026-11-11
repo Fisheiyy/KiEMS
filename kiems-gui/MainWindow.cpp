@@ -29,6 +29,8 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -161,12 +163,41 @@ MainWindow::MainWindow() {
     _logDock->setWidget(_log);
     addDockWidget(Qt::BottomDockWidgetArea, _logDock);
     _logDock->hide();
+    // The queue of runs, like the macOS app's Jobs window.
+    _jobList = new QTreeWidget;
+    _jobList->setObjectName("jobList");
+    _jobList->setHeaderLabels({tr("Simulation"), tr("Status"), tr("Progress")});
+    _jobList->setRootIsDecorated(false);
+    _jobList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    _jobList->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    _jobList->header()->setStretchLastSection(false);
+    _cancelJobButton = new QPushButton(tr("Cancel"));
+    _cancelJobButton->setObjectName("cancelJob");
+    _cancelJobButton->setToolTip(tr("Take the selected runs off the queue, or stop the one running."));
+    _clearJobsButton = new QPushButton(tr("Clear Finished"));
+    _clearJobsButton->setObjectName("clearJobs");
+    auto* jobsPanel = new QWidget;
+    auto* jobsLayout = new QVBoxLayout(jobsPanel);
+    jobsLayout->setContentsMargins(4, 4, 4, 4);
+    jobsLayout->addWidget(_jobList, 1);
+    auto* jobButtons = new QHBoxLayout;
+    jobButtons->addStretch(1);
+    jobButtons->addWidget(_cancelJobButton);
+    jobButtons->addWidget(_clearJobsButton);
+    jobsLayout->addLayout(jobButtons);
+    _jobsDock = new QDockWidget(tr("Jobs"), this);
+    _jobsDock->setObjectName("jobs");
+    _jobsDock->setWidget(jobsPanel);
+    addDockWidget(Qt::BottomDockWidgetArea, _jobsDock);
+    tabifyDockWidget(_logDock, _jobsDock);
+    _jobsDock->hide();
     _statusLabel = new QLabel;
     _progress = new QProgressBar;
     _progress->setMaximumWidth(260);
     _progress->setTextVisible(false);
     _progress->hide();
     _stopButton = new QPushButton(tr("Stop"));
+    _stopButton->setToolTip(tr("Stop the running simulation and empty the queue."));
     _stopButton->hide();
     // Which engine runs use, and a click away from changing it.
     _engineButton = new QPushButton;
@@ -215,30 +246,35 @@ MainWindow::MainWindow() {
     });
 
     connect(&_runner, &PipelineRunner::line, this, [this](const QString& text) { _log->appendPlainText(text); });
-    connect(&_runner, &PipelineRunner::progress, this, [this](const QString& stage, double fraction) {
-        _statusLabel->setText(tr("%1: %2").arg(_runningSimulation, stage));
-        if (fraction < 0) _progress->setRange(0, 0);
-        else {
-            _progress->setRange(0, 1000);
-            _progress->setValue(static_cast<int>(fraction * 1000));
-        }
-    });
-    connect(&_runner, &PipelineRunner::finished, this, [this](bool succeeded, const QString& message) {
-        _progress->hide();
-        _stopButton->hide();
-        _statusLabel->setText(succeeded ? tr("%1 finished.").arg(_runningSimulation)
-                                        : tr("%1: %2").arg(_runningSimulation, message));
-        const int simulation = _document.simulationIndex(_runningSimulation);
-        const bool storedFields = _runningStoresFields;
-        _runningSimulation.clear();
-        _runningStoresFields = false;
-        rebuildSidebar();
+    connect(&_runner, &PipelineRunner::progress, &_jobs, &JobQueue::reportProgress);
+    connect(&_runner, &PipelineRunner::finished, &_jobs, &JobQueue::reportFinished);
+    _jobs.setHooks({[this](const Job& job, QString* error) { return startJob(job, error); }, [this] { _runner.stop(); }});
+    connect(&_jobs, &JobQueue::changed, this, [this] {
+        updateJobList();
+        updateRunStatus();
         updateActions();
-        if (succeeded && simulation >= 0) showPage(simulation, storedFields ? Page::Fields : Page::Results);
-        else if (!succeeded && message != tr("Stopped.")) {
-            QMessageBox::warning(this, tr("KiEMS"), tr("The simulation failed:\n\n%1").arg(message));
-        }
     });
+    connect(&_jobs, &JobQueue::jobStarted, this, [this] { rebuildSidebar(); });
+    connect(&_jobs, &JobQueue::jobFinished, this, &MainWindow::jobFinished);
+    connect(&_jobs, &JobQueue::drained, this, [this] {
+        if (_batchStarted > 1 && _batchFailed > 0) {
+            _statusLabel->setText(tr("%1 of %2 runs failed; the Jobs list says why.").arg(_batchFailed).arg(_batchStarted));
+        } else if (_batchStarted > 1 && _batchStopped == 0) {
+            _statusLabel->setText(tr("All %1 runs finished.").arg(_batchStarted));
+        }
+        _batchStarted = _batchFailed = _batchStopped = 0;
+        rebuildSidebar();
+        updateRunStatus();
+        updateActions();
+    });
+    connect(&_document, &Document::simulationRenamed, &_jobs, &JobQueue::renameSimulation);
+    connect(_jobList, &QTreeWidget::itemSelectionChanged, this, &MainWindow::updateJobList);
+    connect(_cancelJobButton, &QPushButton::clicked, this, [this] {
+        QList<int> ids;
+        for (const QTreeWidgetItem* item : _jobList->selectedItems()) ids << item->data(0, Qt::UserRole).toInt();
+        for (int id : ids) _jobs.cancel(id);
+    });
+    connect(_clearJobsButton, &QPushButton::clicked, &_jobs, &JobQueue::clearFinished);
 
     _engine = EngineSettings::load();
     updateEngineButton();
@@ -266,6 +302,8 @@ void MainWindow::createActions() {
     _runAction = simulation->addAction(tr("&Run"), QKeySequence(Qt::CTRL | Qt::Key_R), this, &MainWindow::runSelected);
     _runFieldsAction = simulation->addAction(tr("Run and Store &Fields"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
                                              this, [this] { runSimulation(true); });
+    _runAllAction = simulation->addAction(tr("Run &All"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_R), this,
+                                          &MainWindow::runAll);
     _stopAction = simulation->addAction(tr("S&top"), QKeySequence(Qt::CTRL | Qt::Key_Period), this, &MainWindow::stopRun);
     simulation->addSeparator();
     simulation->addAction(tr("&Engine..."), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E), this,
@@ -274,6 +312,7 @@ void MainWindow::createActions() {
     QMenu* view = menuBar()->addMenu(tr("&View"));
     view->addAction(tr("&Fit Board"), QKeySequence(Qt::CTRL | Qt::Key_0), this, [this] { _boardView->fitToBoard(); });
     view->addAction(_logDock->toggleViewAction());
+    view->addAction(_jobsDock->toggleViewAction());
 }
 
 bool MainWindow::openDocument(const QString& path) {
@@ -337,13 +376,16 @@ bool MainWindow::maybeSave() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (_runner.isRunning()) {
-        if (QMessageBox::question(this, tr("KiEMS"), tr("A simulation is running. Stop it and quit?")) !=
-            QMessageBox::Yes) {
+    if (_jobs.isBusy()) {
+        const int queued = _jobs.queuedCount();
+        const QString question = queued == 0 ? tr("A simulation is running. Stop it and quit?")
+                                              : tr("A simulation is running and %n more are queued. Stop them and quit?",
+                                                   nullptr, queued);
+        if (QMessageBox::question(this, tr("KiEMS"), question) != QMessageBox::Yes) {
             event->ignore();
             return;
         }
-        _runner.stop();
+        _jobs.stopAll();
     }
     if (maybeSave()) event->accept();
     else event->ignore();
@@ -413,7 +455,7 @@ void MainWindow::runSelected() {
 
 void MainWindow::runSimulation(bool storeFields) {
     const int simulation = currentSimulation();
-    if (simulation < 0 || _runner.isRunning()) return;
+    if (simulation < 0) return;
     if (const QString problem = _document.validate(); !problem.isEmpty()) {
         QMessageBox::warning(this, tr("KiEMS"), tr("The simulation can't run yet:\n\n%1").arg(problem));
         return;
@@ -423,33 +465,152 @@ void MainWindow::runSimulation(bool storeFields) {
                                  tr("Pick the pin to drive on the board, and tick \"Excited\" in the Selection tab."));
         return;
     }
-    // The pipeline reads the document from disk.
-    if (_document.isModified() && !saveDocument()) return;
-    QString error;
-    _runningSimulation = _document.simulationName(simulation);
-    _log->clear();
-    _log->appendPlainText(tr("Engine: %1").arg(_engine.describe(_gpuDevices)));
-    QStringList arguments = _engine.arguments(_gpuDevices);
-    if (storeFields) arguments << "--field-frames";
-    // A run clears the simulation's old output, which Windows refuses while a file in it is open:
-    // let go of the Field Viewer's series first.
-    _fieldViewer->close();
-    _runningStoresFields = storeFields;
-    if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), _runningSimulation, arguments, &error)) {
-        _runningSimulation.clear();
-        _runningStoresFields = false;
-        QMessageBox::warning(this, tr("KiEMS"), error);
+    const QString name = _document.simulationName(simulation);
+    const Job* running = _jobs.running();
+    if (!_jobs.enqueue(name, storeFields)) {
+        _statusLabel->setText(running && running->simulation == name ? tr("%1 is already running.").arg(name)
+                                                                     : tr("%1 is already queued.").arg(name));
+    } else if (_jobs.running() && _jobs.running()->simulation != name) {
+        _statusLabel->setText(tr("%1 is queued.").arg(name));
+        _jobsDock->show();
+    }
+}
+
+void MainWindow::runAll() {
+    if (const QString problem = _document.validate(); !problem.isEmpty()) {
+        QMessageBox::warning(this, tr("KiEMS"), tr("The simulations can't run yet:\n\n%1").arg(problem));
         return;
     }
+    QStringList skipped;
+    QStringList runnable;
+    for (int i = 0; i < _document.simulationCount(); ++i) {
+        (_document.mainExcitation(i) ? runnable : skipped) << _document.simulationName(i);
+    }
+    if (runnable.isEmpty()) {
+        QMessageBox::information(this, tr("KiEMS"),
+                                 tr("No simulation has a pin to drive yet. Pick one on the board, and tick "
+                                    "\"Excited\" in the Selection tab."));
+        return;
+    }
+    for (const QString& name : runnable) _jobs.enqueue(name, false);
+    if (_jobs.queuedCount() > 0) _jobsDock->show();
+    if (!skipped.isEmpty()) {
+        _log->appendPlainText(tr("Not queued, as they have no pin to drive: %1").arg(skipped.join(", ")));
+        _statusLabel->setText(tr("Skipped %n simulation(s) with no pin to drive.", nullptr, static_cast<int>(skipped.size())));
+    }
+}
+
+bool MainWindow::startJob(const Job& job, QString* error) {
+    ++_batchStarted;
+    const int simulation = _document.simulationIndex(job.simulation);
+    if (simulation < 0) {
+        *error = tr("The simulation no longer exists.");
+        return false;
+    }
+    if (!_document.mainExcitation(simulation)) {
+        *error = tr("It has no pin to drive.");
+        return false;
+    }
+    if (const QString problem = _document.validate(); !problem.isEmpty()) {
+        *error = problem;
+        return false;
+    }
+    // The pipeline reads the document from disk.
+    if (_document.isModified() && !_document.save(error)) return false;
+    if (_batchStarted == 1) _log->clear();
+    else _log->appendPlainText(QString());
+    _log->appendPlainText(tr("== %1 ==").arg(job.simulation));
+    _log->appendPlainText(tr("Engine: %1").arg(_engine.describe(_gpuDevices)));
+    QStringList arguments = _engine.arguments(_gpuDevices);
+    if (job.storeFields) arguments << "--field-frames";
+    // A run clears the simulation's old output, which Windows refuses while a file in it is open:
+    // let go of the Field Viewer's series first if it's showing this simulation.
+    if (_fieldViewer->simulationDirectory() == _document.simulationDir(simulation)) _fieldViewer->close();
+    if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), job.simulation, arguments, error)) return false;
     _logDock->show();
-    _progress->setRange(0, 0);
+    return true;
+}
+
+void MainWindow::jobFinished(const Job& job) {
+    if (job.status == Job::Status::Failed) ++_batchFailed;
+    if (job.status == Job::Status::Stopped) ++_batchStopped;
+    switch (job.status) {
+    case Job::Status::Succeeded: _statusLabel->setText(tr("%1 finished.").arg(job.simulation)); break;
+    case Job::Status::Stopped: _statusLabel->setText(tr("%1 stopped.").arg(job.simulation)); break;
+    default: _statusLabel->setText(tr("%1: %2").arg(job.simulation, job.message)); break;
+    }
+    rebuildSidebar();
+    // A lone run shows its results (or why it failed) straight away. In a batch, the page in view
+    // is only refreshed, so the next result doesn't pull the window away from what's being read.
+    const bool lone = _batchStarted <= 1 && _jobs.queuedCount() == 0;
+    const int simulation = _document.simulationIndex(job.simulation);
+    if (job.status == Job::Status::Succeeded && simulation >= 0) {
+        if (lone) showPage(simulation, job.storeFields ? Page::Fields : Page::Results);
+        else if (currentSimulation() == simulation) selectionChanged();
+    } else if (job.status == Job::Status::Failed && lone) {
+        QMessageBox::warning(this, tr("KiEMS"), tr("The simulation failed:\n\n%1").arg(job.message));
+    }
+}
+
+void MainWindow::updateJobList() {
+    QSet<int> selected;
+    for (const QTreeWidgetItem* item : _jobList->selectedItems()) selected << item->data(0, Qt::UserRole).toInt();
+    bool canCancel = false;
+    bool anyFinished = false;
+    {
+        const QSignalBlocker blocker(_jobList);
+        _jobList->clear();
+        for (const Job& job : _jobs.jobs()) {
+            QString status = statusText(job.status);
+            if (job.status == Job::Status::Running && !job.stage.isEmpty()) status = job.stage;
+            QString progress;
+            if (job.status == Job::Status::Running && job.fraction >= 0) {
+                progress = QString("%1%").arg(static_cast<int>(job.fraction * 100));
+            }
+            auto* item = new QTreeWidgetItem(
+                _jobList, {job.storeFields ? tr("%1 (with fields)").arg(job.simulation) : job.simulation, status, progress});
+            item->setData(0, Qt::UserRole, job.id);
+            if (!job.message.isEmpty()) {
+                item->setToolTip(0, job.message);
+                item->setToolTip(1, job.message);
+            }
+            if (job.status == Job::Status::Failed) item->setForeground(1, QColor(0xd0, 0x3a, 0x2f));
+            if (job.finished()) anyFinished = true;
+            if (selected.contains(job.id)) {
+                item->setSelected(true);
+                if (!job.finished()) canCancel = true;
+            }
+        }
+    }
+    _jobList->resizeColumnToContents(1);
+    _jobList->resizeColumnToContents(2);
+    _cancelJobButton->setEnabled(canCancel);
+    _clearJobsButton->setEnabled(anyFinished);
+}
+
+void MainWindow::updateRunStatus() {
+    const Job* job = _jobs.running();
+    if (!job) {
+        _progress->hide();
+        _stopButton->hide();
+        return;
+    }
+    const int queued = _jobs.queuedCount();
+    QString text = tr("%1: %2").arg(job->simulation, job->stage);
+    if (queued > 0) text += tr(" (%n more queued)", nullptr, queued);
+    _statusLabel->setText(text);
+    if (job->fraction < 0) {
+        _progress->setRange(0, 0);
+    } else {
+        _progress->setRange(0, 1000);
+        _progress->setValue(static_cast<int>(job->fraction * 1000));
+    }
     _progress->show();
     _stopButton->show();
-    updateActions();
 }
 
 void MainWindow::stopRun() {
-    _runner.stop();
+    _jobs.stopAll();
 }
 
 void MainWindow::showEngineSettings() {
@@ -484,7 +645,11 @@ void MainWindow::rebuildSidebar() {
         QFont font = top->font(0);
         font.setBold(true);
         top->setFont(0, font);
-        const bool running = _document.simulationName(i) == _runningSimulation;
+        const Job* job = _jobs.running();
+        const bool running = job && job->simulation == _document.simulationName(i);
+        const bool runningStoresFields = running && job->storeFields;
+        if (running) top->setToolTip(0, tr("Running"));
+        else if (_jobs.contains(_document.simulationName(i))) top->setToolTip(0, tr("Queued"));
         auto* board = new QTreeWidgetItem(top, {tr("Board")});
         board->setData(0, kSimulationRole, i);
         board->setData(0, kPageRole, static_cast<int>(Page::Board));
@@ -497,7 +662,7 @@ void MainWindow::rebuildSidebar() {
         fields->setData(0, kSimulationRole, i);
         fields->setData(0, kPageRole, static_cast<int>(Page::Fields));
         const bool haveFields = !FieldViewer::findSeries(_document.simulationDir(i)).empty();
-        fields->setIcon(0, statusDot(haveFields, running && _runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
+        fields->setIcon(0, statusDot(haveFields, runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
         top->setExpanded(true);
         if (i == selectedSimulation) {
             _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)  ? results
@@ -591,16 +756,20 @@ void MainWindow::updateTitle() {
 
 void MainWindow::updateActions() {
     const bool open = _document.isOpen();
-    const bool running = _runner.isRunning();
-    const bool haveSimulation = currentSimulation() >= 0;
+    const int simulation = currentSimulation();
+    const bool haveSimulation = simulation >= 0;
+    // The selected simulation can't be removed while its run is queued or under way.
+    const bool busy = haveSimulation && _jobs.contains(_document.simulationName(simulation));
+    const bool canRun = !PipelineRunner::cliPath().isEmpty();
     _saveAction->setEnabled(open);
     _addAction->setEnabled(open);
     _addButton->setEnabled(open);
-    _removeAction->setEnabled(haveSimulation && !running);
-    _removeButton->setEnabled(haveSimulation && !running);
-    _runAction->setEnabled(haveSimulation && !running && !PipelineRunner::cliPath().isEmpty());
+    _removeAction->setEnabled(haveSimulation && !busy);
+    _removeButton->setEnabled(haveSimulation && !busy);
+    _runAction->setEnabled(haveSimulation && canRun);
     _runFieldsAction->setEnabled(_runAction->isEnabled());
-    _stopAction->setEnabled(running);
+    _runAllAction->setEnabled(open && _document.simulationCount() > 0 && canRun);
+    _stopAction->setEnabled(_jobs.isBusy());
 }
 
 } // namespace kiems_gui

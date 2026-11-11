@@ -104,6 +104,7 @@ public:
 signals:
     void changed();
     void modifiedChanged(bool modified);
+    void simulationRenamed(const QString& from, const QString& to);
 
 private:
     nlohmann::json* simulation(int index);

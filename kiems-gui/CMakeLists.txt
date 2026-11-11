@@ -26,6 +26,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     FieldViewer.hpp
     Inspector.cpp
     Inspector.hpp
+    JobQueue.cpp
+    JobQueue.hpp
     MainWindow.cpp
     MainWindow.hpp
     PipelineRunner.cpp
@@ -89,6 +91,8 @@ if(TARGET Qt6::Test)
         EyeTestPresets.hpp
         EyeView.cpp
         EyeView.hpp
+        JobQueue.cpp
+        JobQueue.hpp
         QuantityEdit.cpp
         QuantityEdit.hpp
         SettingsPanel.cpp

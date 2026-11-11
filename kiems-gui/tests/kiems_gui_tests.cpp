@@ -5,6 +5,7 @@
 #include "Document.hpp"
 #include "EyeTestPresets.hpp"
 #include "EyeView.hpp"
+#include "JobQueue.hpp"
 #include "QuantityEdit.hpp"
 #include "SettingsPanel.hpp"
 #include "SimulationEditor.hpp"
@@ -683,6 +684,106 @@ private slots:
         if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
             QVERIFY(pixmap.save(QDir(snapshots).filePath("eyes.png")));
         }
+    }
+
+    // The run queue: one job at a time, in order, no duplicates, failures and cancels move on.
+    void jobQueue() {
+        using kiems_gui::Job;
+        kiems_gui::JobQueue queue;
+        QStringList started;
+        int stops = 0;
+        QStringList refuse; // simulations whose start hook fails
+        queue.setHooks({[&](const Job& job, QString* error) {
+                            started << job.simulation + (job.storeFields ? "+fields" : "");
+                            if (refuse.contains(job.simulation)) {
+                                *error = "refused";
+                                return false;
+                            }
+                            return true;
+                        },
+                        [&] { ++stops; }});
+        QSignalSpy drained(&queue, &kiems_gui::JobQueue::drained);
+        QSignalSpy finished(&queue, &kiems_gui::JobQueue::jobFinished);
+
+        // The first starts at once; the rest wait, and a repeat isn't queued twice -- but asking
+        // for fields upgrades a waiting job.
+        QVERIFY(queue.enqueue("A", false));
+        QVERIFY(queue.enqueue("B", false));
+        QVERIFY(queue.enqueue("C", false));
+        QVERIFY(!queue.enqueue("B", true));
+        QVERIFY(!queue.enqueue("A", false));
+        QVERIFY(started == QStringList{"A"});
+        QVERIFY(queue.running() && queue.running()->simulation == "A");
+        QCOMPARE(queue.queuedCount(), 2);
+        QVERIFY(queue.contains("B") && queue.isBusy());
+
+        // Progress lands on the running job; a rename follows a queued job, not the running one.
+        queue.reportProgress("FDTD", 0.25);
+        QCOMPARE(queue.running()->stage, QString("FDTD"));
+        QCOMPARE(queue.running()->fraction, 0.25);
+        queue.renameSimulation("C", "C2");
+        queue.renameSimulation("A", "A2");
+        QVERIFY(queue.contains("C2") && !queue.contains("C") && queue.running()->simulation == "A");
+
+        // A finishes; B (now with fields) starts. B fails; C2 starts.
+        queue.reportFinished(true, QString());
+        QVERIFY(started == (QStringList{"A", "B+fields"}));
+        queue.reportFinished(false, "kiems exited with status 1.");
+        QVERIFY(started == (QStringList{"A", "B+fields", "C2"}));
+        QCOMPARE(finished.count(), 2);
+        QVERIFY(finished.at(1).at(0).value<Job>().status == Job::Status::Failed);
+
+        // Cancelling the running job asks the runner to stop; its end is reported as stopped, and
+        // the queue drains.
+        const int c2 = queue.running()->id;
+        queue.cancel(c2);
+        QCOMPARE(stops, 1);
+        QCOMPARE(drained.count(), 0);
+        queue.reportFinished(false, "Stopped.");
+        QCOMPARE(drained.count(), 1);
+        QVERIFY(!queue.isBusy());
+        const QList<Job>& jobs = queue.jobs();
+        QCOMPARE(jobs.size(), 3);
+        QVERIFY(jobs[0].status == Job::Status::Succeeded && jobs[0].fraction == 1);
+        QVERIFY(jobs[1].status == Job::Status::Failed && jobs[1].message == "kiems exited with status 1.");
+        QVERIFY(jobs[2].status == Job::Status::Stopped);
+
+        // A job whose start fails is marked failed, and the next one starts in its place.
+        refuse = {"D"};
+        QVERIFY(queue.enqueue("D", false));
+        QVERIFY(queue.jobs().back().status == Job::Status::Failed);
+        QCOMPARE(queue.jobs().back().message, QString("refused"));
+        QCOMPARE(drained.count(), 2);
+        QVERIFY(queue.enqueue("E", false));
+        QVERIFY(queue.enqueue("F", false));
+        QVERIFY(queue.running() && queue.running()->simulation == "E");
+
+        // Cancelling a waiting job removes it; stopping everything empties the queue too.
+        const int f = queue.jobs().back().id;
+        queue.cancel(f);
+        QVERIFY(!queue.contains("F"));
+        QVERIFY(queue.enqueue("G", false));
+        queue.stopAll();
+        QCOMPARE(stops, 2);
+        QCOMPARE(queue.queuedCount(), 0);
+        queue.reportFinished(false, "Stopped.");
+        QVERIFY(!queue.isBusy());
+
+        // A hook that finishes its run before returning still lets the queue move on.
+        refuse.clear();
+        queue.setHooks({[&](const Job& job, QString*) {
+                            started << job.simulation;
+                            if (job.simulation == "H") queue.reportFinished(true, QString());
+                            return true;
+                        },
+                        [] {}});
+        queue.enqueue("H", false);
+        QVERIFY(queue.enqueue("I", false));
+        QVERIFY(queue.running() && queue.running()->simulation == "I");
+        queue.reportFinished(true, QString());
+
+        queue.clearFinished();
+        QVERIFY(queue.jobs().isEmpty());
     }
 };
 

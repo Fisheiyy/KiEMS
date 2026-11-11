@@ -220,8 +220,10 @@ void Document::removeSimulation(int index) {
 void Document::renameSimulation(int index, const QString& name) {
     if (name == simulationName(index)) return;
     if (nlohmann::json* sim = simulation(index)) {
+        const QString from = simulationName(index);
         (*sim)["name"] = utf8(name);
         touch();
+        emit simulationRenamed(from, name);
     }
 }
 

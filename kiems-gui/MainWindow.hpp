@@ -6,6 +6,7 @@
 #include "BoardModel.hpp"
 #include "Document.hpp"
 #include "EngineSettings.hpp"
+#include "JobQueue.hpp"
 #include "PipelineRunner.hpp"
 
 #include <QMainWindow>
@@ -51,9 +52,17 @@ private:
     void addSimulation();
     void removeSimulation();
     void runSelected();
-    /// Runs the selected simulation; `storeFields` also keeps its field frames for the Field Viewer.
+    /// Queues the selected simulation; `storeFields` also keeps its field frames for the Field
+    /// Viewer.
     void runSimulation(bool storeFields);
+    /// Queues every simulation that has a pin to drive.
+    void runAll();
     void stopRun();
+    /// JobQueue's start hook: saves the document and starts the run for `job`.
+    bool startJob(const Job& job, QString* error);
+    void jobFinished(const Job& job);
+    void updateJobList();
+    void updateRunStatus();
     void showEngineSettings();
     void updateEngineButton();
 
@@ -69,6 +78,7 @@ private:
     Document _document;
     BoardModel _boardModel;
     PipelineRunner _runner;
+    JobQueue _jobs;
     GpuDeviceList _gpuDevices;
     EngineSettings _engine;
 
@@ -86,6 +96,10 @@ private:
     FieldViewer* _fieldViewer;
     Inspector* _inspector;
     QDockWidget* _logDock;
+    QDockWidget* _jobsDock;
+    QTreeWidget* _jobList;
+    QPushButton* _cancelJobButton;
+    QPushButton* _clearJobsButton;
     QPlainTextEdit* _log;
     QLabel* _statusLabel;
     QProgressBar* _progress;
@@ -95,12 +109,16 @@ private:
     QAction* _saveAction;
     QAction* _runAction;
     QAction* _runFieldsAction;
+    QAction* _runAllAction;
     QAction* _stopAction;
     QAction* _addAction;
     QAction* _removeAction;
     bool _rebuildingSidebar = false;
-    QString _runningSimulation;
-    bool _runningStoresFields = false;
+    /// Jobs started, and how many of them failed, since the queue was last empty: a lone run that
+    /// fails says so in a dialog, but a batch carries on and leaves its failures in the Jobs list.
+    int _batchStarted = 0;
+    int _batchFailed = 0;
+    int _batchStopped = 0;
 };
 
 } // namespace kiems_gui
