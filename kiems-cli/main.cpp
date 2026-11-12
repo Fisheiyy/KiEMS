@@ -478,7 +478,14 @@ std::expected<void, std::string> clearStage(const std::filesystem::path& stageDi
 /// against a raw Postprocessor. Excitation postprocessing (a downstream consumer of S-parameters,
 /// not part of the geometry->simulate->postprocess pipeline itself) still reaches into the
 /// underlying Postprocessor via PostprocessResult::postprocessorFor() -- see its doc comment.
-void saveAndRenderResults(const PostprocessResult& results, const Arguments& args) {
+/// Where the FDTD runs' outputs are read back from: -i, unless -i named the KiCad board to import
+/// (as kiems-gui passes it), when they're in the simulation directory as usual.
+std::filesystem::path simulationInputDir(const Arguments& args, const PathsConfig& paths) {
+    return args.input().extension() == ".kicad_pcb" ? paths.simulationDir : args.input();
+}
+
+void saveAndRenderResults(const PostprocessResult& results, const Arguments& args,
+                          const std::filesystem::path& simulationDir) {
     for (const auto& simConfig : results.config().simulations()) {
         const std::filesystem::path outDir = args.output() / simulationDirectoryName(simConfig.name());
         std::filesystem::create_directories(outDir);
@@ -498,7 +505,7 @@ void saveAndRenderResults(const PostprocessResult& results, const Arguments& arg
                 continue;
             }
             const std::map<std::int32_t, double> runDurations =
-                ExcitationPostprocessor::loadRunDurations(args.input() / simulationDirectoryName(simConfig.name()), simConfig);
+                ExcitationPostprocessor::loadRunDurations(simulationDir / simulationDirectoryName(simConfig.name()), simConfig);
             // The eyes the results show, tested against the simulation's eye mask (eyes.json).
             saveEyeDiagrams(computeSimulationEyes(*post, simConfig, results.config().frequency(), runDurations),
                             simConfig.eyeTest(), outDir / "eyes.json");
@@ -1176,7 +1183,7 @@ int runCli(int argc, char** argv) {
                 }
                 geometryResult = std::move(*loaded);
             }
-            auto loaded = SimulationResult::load(*geometryResult, args.input());
+            auto loaded = SimulationResult::load(*geometryResult, simulationInputDir(args, paths));
             if (!loaded) {
                 logError(loaded.error());
                 return EXIT_FAILURE;
@@ -1189,7 +1196,7 @@ int runCli(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         postprocessResult = std::move(*result);
-        saveAndRenderResults(*postprocessResult, args);
+        saveAndRenderResults(*postprocessResult, args, simulationInputDir(args, paths));
     }
 
     return EXIT_SUCCESS;

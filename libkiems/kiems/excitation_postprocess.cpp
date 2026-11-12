@@ -148,6 +148,18 @@ void ExcitationPostprocessor::run() {
     for (const auto& excitation : _simConfig.excitations()) {
         latestEnd = std::max(latestEnd, excitationRecordEnd(excitation, _simConfig, _runDurations, _frequency));
     }
+    // A response rebuilt from the sweep repeats every 1/df, so nothing past that is new. Without
+    // this, an excitation lasting seconds (where nanoseconds were meant), with no FDTD run lengths
+    // to go by, sized every port's record at billions of samples.
+    if (_frequencies.size() >= 2) {
+        const double step = (_frequencies.back() - _frequencies.front()) / static_cast<double>(_frequencies.size() - 1);
+        if (step > 0 && latestEnd > 1.0 / step) {
+            logWarning() << "The excitations of \"" << _simConfig.name() << "\" would be recorded for " << latestEnd
+                         << " s; the sweep's " << step << " Hz spacing resolves only " << 1.0 / step
+                         << " s, so they're recorded for that long. Check the excitation durations.";
+            latestEnd = 1.0 / step;
+        }
+    }
     const std::size_t sampleCount = static_cast<std::size_t>(std::ceil(latestEnd / _dt)) + 1;
     const std::size_t portCount = _simConfig.ports().size();
     _responses.assign(portCount, TimeWaveform{_dt, std::vector<double>(sampleCount, 0.0)});
