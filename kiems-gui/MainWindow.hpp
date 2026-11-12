@@ -1,6 +1,9 @@
-// The KiEMS document window, laid out like the macOS app's: the linked board across the top,
-// simulations in a sidebar (each with its Board and Results pages), the selected page in the
-// middle, and the inspector on the right. A log panel and the status bar follow running jobs.
+// The KiEMS document window, laid out like the macOS app's: a toolbar with the run buttons and the
+// status display (the document and its board, what's running and how far along, and the failed
+// tests and warnings to step through); a sidebar with Board Setup and the simulations, each row its
+// board and each simulation's Geometry, Results, Field Viewer and Trace pages marked with how they
+// stand; the selected page in the middle; and the inspector on the right. Log and Jobs panels
+// follow running jobs.
 #pragma once
 
 #include "BoardModel.hpp"
@@ -10,6 +13,8 @@
 #include "PipelineRunner.hpp"
 
 #include <QHash>
+#include <QToolButton>
+#include <QSet>
 #include <QTimer>
 #include <QMainWindow>
 
@@ -33,6 +38,7 @@ class FieldViewer;
 class GeometryView;
 class PowerView;
 class TraceView;
+class StatusDisplay;
 class Inspector;
 class ResultsView;
 
@@ -47,7 +53,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
-    enum class Page { Board, Geometry, Results, Fields, Power, Trace };
+    enum class Page { Board, Geometry, Results, Fields, Power, Trace, BoardSetup };
 
     void createActions();
     void newDocument();
@@ -99,8 +105,22 @@ private:
     void resetSetSnapshots();
 
     void rebuildSidebar();
-    /// One simulation's row and its Board, Results and Field Viewer pages, under `parent` (or at the
-    /// top level).
+    /// Refreshes each page row's status mark (SidebarStatus) without rebuilding the list.
+    void refreshSidebarStatus();
+    /// The status mark of `simulation`'s `page`.
+    int pageStatus(int simulation, Page page, double* progress) const;
+    /// Whether `simulation`'s results fail their tests (cached on its eyes.json).
+    bool failsTests(int simulation) const;
+    /// The failed tests and warnings the status display counts, as (simulation, page) stops in
+    /// sidebar order; refreshIssues() recounts them, showNextIssue() steps through them.
+    QList<QPair<int, Page>> issues(bool failedTests) const;
+    void refreshIssues();
+    void showNextIssue(bool failedTests);
+    /// What the status display says while nothing is running: the last thing that happened.
+    void showStatus(const QString& message);
+    void showSidebarMenu(const QPoint& at);
+    /// One simulation's row and its Geometry, Results, Field Viewer and Trace pages, under `parent`
+    /// (or at the top level).
     QTreeWidgetItem* addSimulationItem(QTreeWidgetItem* parent, int simulation, int selectedSimulation,
                                        int selectedPage);
     void selectionChanged();
@@ -118,8 +138,13 @@ private:
     GpuDeviceList _gpuDevices;
     EngineSettings _engine;
 
-    QLabel* _projectLabel;
-    QPushButton* _chooseBoardButton;
+    StatusDisplay* _statusDisplay;
+    /// The status display's message while nothing is running.
+    QString _lastStatus;
+    /// Simulations whose last run (geometry or full) failed, for their rows' marks and the warnings.
+    QSet<QString> _failedGeometry, _failedRuns;
+    /// failsTests()'s cache: by results directory, eyes.json's time and whether it fails.
+    mutable QHash<QString, QPair<qint64, bool>> _testVerdicts;
     QTreeWidget* _sidebar;
     QPushButton* _addButton;
     QPushButton* _removeButton;
@@ -140,10 +165,7 @@ private:
     QPushButton* _cancelJobButton;
     QPushButton* _clearJobsButton;
     QPlainTextEdit* _log;
-    QLabel* _statusLabel;
-    QProgressBar* _progress;
-    QPushButton* _stopButton;
-    QPushButton* _engineButton;
+    QToolButton* _engineButton;
     /// Ticks the running job's elapsed time and countdown between log lines.
     QTimer* _runClock;
     /// How long each simulation's last full run took, in seconds: what a run of it is first

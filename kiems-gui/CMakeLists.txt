@@ -29,6 +29,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     GeometryScene.hpp
     GeometryView.cpp
     GeometryView.hpp
+    Icons.cpp
+    Icons.hpp
     Inspector.cpp
     Inspector.hpp
     JobQueue.cpp
@@ -53,12 +55,16 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     SelectionPanel.hpp
     SettingsPanel.cpp
     SettingsPanel.hpp
+    Sidebar.cpp
+    Sidebar.hpp
     SimulationEditor.cpp
     SimulationEditor.hpp
     SimulationSet.cpp
     SimulationSet.hpp
     SimulationSetPanel.cpp
     SimulationSetPanel.hpp
+    StatusDisplay.cpp
+    StatusDisplay.hpp
     TestsPanel.cpp
     TestsPanel.hpp
     TraceAnalysis.cpp

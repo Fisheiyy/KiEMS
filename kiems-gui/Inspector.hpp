@@ -43,6 +43,8 @@ public:
 
     void setBoard(std::shared_ptr<const BoardData> board);
     void setSimulation(int simulation);
+    /// Switches to the Board Setup tab.
+    void showBoardSetup();
     /// Shows `pick` in the Selection and Board Setup tabs, switching to Selection when something was
     /// picked unless Board Setup is open.
     void setPick(const BoardPick& pick);

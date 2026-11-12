@@ -19,6 +19,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -89,6 +90,11 @@ Inspector::Inspector(Document* document, QWidget* parent) : QWidget(parent), _do
     outer->setContentsMargins(0, 0, 0, 0);
     _tabs = new QTabWidget;
     _tabs->setDocumentMode(true);
+    // Every tab in view at once, a little tighter than the style's own, rather than behind scroll arrows.
+    _tabs->setUsesScrollButtons(false);
+    _tabs->tabBar()->setElideMode(Qt::ElideRight);
+    _tabs->tabBar()->setExpanding(false);
+    _tabs->setStyleSheet("QTabBar::tab { padding: 4px 8px; }");
     outer->addWidget(_tabs);
 
     // --- Simulation tab
@@ -241,6 +247,8 @@ void Inspector::setBoard(std::shared_ptr<const BoardData> board) {
     populateBoardLists();
     refresh();
 }
+
+void Inspector::showBoardSetup() { _tabs->setCurrentWidget(_boardSetupPage); }
 
 void Inspector::setSimulation(int simulation) {
     _simulation = simulation;

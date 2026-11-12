@@ -11,6 +11,10 @@
 #include "SimulationEditor.hpp"
 #include "SimulationSet.hpp"
 #include "TraceView.hpp"
+#include "EyeView.hpp"
+#include "Icons.hpp"
+#include "Sidebar.hpp"
+#include "StatusDisplay.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -43,6 +47,8 @@
 #include <QStatusBar>
 #include <QStyle>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
@@ -58,34 +64,9 @@ constexpr int kPageRole = Qt::UserRole + 1;
 /// A power analysis row's index in the document's list; absent on every other row.
 constexpr int kPowerRole = Qt::UserRole + 3;
 
-/// A small lightning bolt for power analysis rows.
-QIcon boltIcon() {
-    QPixmap pixmap(14, 14);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(0xf2, 0xc0, 0x3b));
-    const QPointF bolt[] = {{8.5, 1}, {3, 8}, {6.5, 8}, {5, 13}, {11, 5.5}, {7.5, 5.5}, {9.5, 1}};
-    painter.drawPolygon(bolt, 7);
-    return QIcon(pixmap);
-}
-
 /// The key a sidebar row's expansion is remembered by.
 QString expansionKey(const QTreeWidgetItem* item) {
     return item->data(0, Qt::UserRole + 2).toString();
-}
-
-/// A status dot like the macOS sidebar's: hollow until a stage has run, filled once it has.
-QIcon statusDot(bool done, const QColor& color) {
-    QPixmap pixmap(14, 14);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(color, 1.5));
-    painter.setBrush(done ? QBrush(color) : Qt::NoBrush);
-    painter.drawEllipse(QRectF(2, 2, 10, 10));
-    return QIcon(pixmap);
 }
 
 QIcon colorSwatch(const QColor& color) {
@@ -100,41 +81,60 @@ MainWindow::MainWindow() {
     setWindowIcon(QIcon());
     resize(1500, 950);
 
-    // Project bar.
-    auto* projectBar = new QWidget;
-    auto* projectLayout = new QHBoxLayout(projectBar);
-    projectLayout->setContentsMargins(12, 8, 12, 8);
-    auto* projectTitle = new QLabel(tr("<b>Project:</b>"));
-    _projectLabel = new QLabel;
-    _projectLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    _chooseBoardButton = new QPushButton(tr("Change Board..."));
-    projectLayout->addWidget(projectTitle);
-    projectLayout->addWidget(_projectLabel, 1);
-    projectLayout->addWidget(_chooseBoardButton);
+    _statusDisplay = new StatusDisplay;
 
     // Sidebar.
     auto* sidebarPanel = new QWidget;
     auto* sidebarLayout = new QVBoxLayout(sidebarPanel);
     sidebarLayout->setContentsMargins(0, 0, 0, 0);
     _sidebar = new QTreeWidget;
+    _sidebar->setObjectName("sidebar");
     _sidebar->setHeaderHidden(true);
     _sidebar->setColumnCount(1);
-    _sidebar->setMinimumWidth(240);
-    _sidebar->setIconSize(QSize(14, 14));
+    _sidebar->setMinimumWidth(230);
+    _sidebar->setIconSize(QSize(16, 16));
+    _sidebar->setIndentation(14);
+    _sidebar->setFrameShape(QFrame::NoFrame);
+    _sidebar->setItemDelegate(new SidebarDelegate(_sidebar));
+    _sidebar->setContextMenuPolicy(Qt::CustomContextMenu);
     _addButton = new QPushButton("+");
     _removeButton = new QPushButton(QString::fromUtf8("\xE2\x88\x92"));
-    for (QPushButton* button : {_addButton, _removeButton}) button->setFixedWidth(32);
+    _addButton->setToolTip(tr("Add a simulation, a Simulation Set or a power analysis"));
+    _removeButton->setToolTip(tr("Remove the selected simulation"));
+    for (QPushButton* button : {_addButton, _removeButton}) {
+        button->setFlat(true);
+        button->setFixedSize(28, 24);
+        QFont glyph = button->font();
+        glyph.setPointSizeF(glyph.pointSizeF() * 1.35);
+        button->setFont(glyph);
+    }
     auto* sidebarButtons = new QHBoxLayout;
-    sidebarButtons->addStretch();
+    sidebarButtons->setContentsMargins(6, 2, 6, 4);
+    sidebarButtons->setSpacing(0);
     sidebarButtons->addWidget(_addButton);
     sidebarButtons->addWidget(_removeButton);
+    sidebarButtons->addStretch();
     sidebarLayout->addWidget(_sidebar, 1);
     sidebarLayout->addLayout(sidebarButtons);
 
     // Pages.
     _pages = new QStackedWidget;
-    _emptyPage = new QLabel(tr("Open or create a simulation document (File menu) to begin."));
-    static_cast<QLabel*>(_emptyPage)->setAlignment(Qt::AlignCenter);
+    {
+        auto* empty = new QLabel;
+        empty->setObjectName("emptyPage");
+        empty->setAlignment(Qt::AlignCenter);
+        empty->setWordWrap(true);
+        QFont big = empty->font();
+        big.setPointSizeF(big.pointSizeF() * 2);
+        big.setWeight(QFont::Medium);
+        empty->setFont(big);
+        QPalette faint = empty->palette();
+        QColor text = faint.color(QPalette::WindowText);
+        text.setAlphaF(0.3);
+        faint.setColor(QPalette::WindowText, text);
+        empty->setPalette(faint);
+        _emptyPage = empty;
+    }
     // The layer list floats over the board's top-left corner with nothing behind it, as on macOS.
     _boardPage = new QWidget;
     auto* boardLayout = new QGridLayout(_boardPage);
@@ -172,20 +172,19 @@ MainWindow::MainWindow() {
     _pages->addWidget(_traceView);
 
     _inspector = new Inspector(&_document);
-    _inspector->setMinimumWidth(300);
+    _inspector->setMinimumWidth(340);
 
     auto* splitter = new QSplitter;
     splitter->addWidget(sidebarPanel);
     splitter->addWidget(_pages);
     splitter->addWidget(_inspector);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({260, 900, 320});
+    splitter->setSizes({250, 850, 400});
 
     auto* central = new QWidget;
     auto* centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
-    centralLayout->addWidget(projectBar);
     centralLayout->addWidget(splitter, 1);
     setCentralWidget(central);
 
@@ -227,30 +226,55 @@ MainWindow::MainWindow() {
     addDockWidget(Qt::BottomDockWidgetArea, _jobsDock);
     tabifyDockWidget(_logDock, _jobsDock);
     _jobsDock->hide();
-    _statusLabel = new QLabel;
     _runClock = new QTimer(this);
     _runClock->setInterval(1000);
     connect(_runClock, &QTimer::timeout, this, [this] {
         updateRunStatus();
         updateRunningJobTime();
     });
-    _progress = new QProgressBar;
-    _progress->setMaximumWidth(260);
-    _progress->setTextVisible(false);
-    _progress->hide();
-    _stopButton = new QPushButton(tr("Stop"));
-    _stopButton->setToolTip(tr("Stop the running simulation and empty the queue."));
-    _stopButton->hide();
     // Which engine runs use, and a click away from changing it.
-    _engineButton = new QPushButton;
-    _engineButton->setFlat(true);
+    _engineButton = new QToolButton;
+    _engineButton->setObjectName("engineButton");
+    _engineButton->setAutoRaise(true);
+    _engineButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    _engineButton->setIcon(icons::icon(icons::Glyph::Engine, palette().color(QPalette::WindowText)));
     _engineButton->setToolTip(tr("The engine simulations run on. Click to change it."));
-    statusBar()->addWidget(_statusLabel, 1);
-    statusBar()->addPermanentWidget(_engineButton);
-    statusBar()->addPermanentWidget(_progress);
-    statusBar()->addPermanentWidget(_stopButton);
 
     createActions();
+
+    // The toolbar, as the macOS window has it: run buttons by the sidebar, the status display in
+    // the middle, the engine at the end.
+    auto* toolbar = addToolBar(tr("Toolbar"));
+    toolbar->setObjectName("toolbar");
+    toolbar->setMovable(false);
+    toolbar->setFloatable(false);
+    toolbar->toggleViewAction()->setVisible(false);
+    toolbar->setIconSize(QSize(18, 18));
+    toolbar->setContextMenuPolicy(Qt::PreventContextMenu);
+    toolbar->setStyleSheet("QToolBar { border: none; spacing: 4px; padding: 4px 8px; }");
+    const QColor ink = palette().color(QPalette::WindowText);
+    _runAction->setIcon(icons::icon(icons::Glyph::Play, ink));
+    _runAllAction->setIcon(icons::icon(icons::Glyph::PlayAll, ink));
+    _stopAction->setIcon(icons::icon(icons::Glyph::Stop, ink));
+    _runAction->setToolTip(tr("Run the selected simulation, or every simulation in the selected set (Ctrl+R)"));
+    _runAllAction->setToolTip(tr("Run every simulation (Ctrl+Alt+R)"));
+    _stopAction->setToolTip(tr("Stop the running simulation and empty the queue (Ctrl+.)"));
+    toolbar->addAction(_runAction);
+    toolbar->addAction(_runAllAction);
+    toolbar->addAction(_stopAction);
+    const auto spacer = [] {
+        auto* widget = new QWidget;
+        widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        return widget;
+    };
+    toolbar->addWidget(spacer());
+    toolbar->addWidget(_statusDisplay);
+    toolbar->addWidget(spacer());
+    toolbar->addWidget(_engineButton);
+    connect(_statusDisplay, &StatusDisplay::chooseBoardRequested, this, &MainWindow::chooseBoard);
+    connect(_statusDisplay, &StatusDisplay::showFailedTests, this, [this] { showNextIssue(true); });
+    connect(_statusDisplay, &StatusDisplay::showWarnings, this, [this] { showNextIssue(false); });
+    connect(_sidebar, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showSidebarMenu);
 
     connect(&_document, &Document::changed, this, [this] {
         rebuildSidebar();
@@ -259,7 +283,6 @@ MainWindow::MainWindow() {
         scheduleSetRegeneration();
     });
     connect(&_document, &Document::modifiedChanged, this, &MainWindow::updateTitle);
-    connect(_chooseBoardButton, &QPushButton::clicked, this, &MainWindow::chooseBoard);
     connect(_addButton, &QPushButton::clicked, this, [this] {
         QMenu menu(this);
         menu.addAction(_addAction);
@@ -268,15 +291,14 @@ MainWindow::MainWindow() {
         menu.exec(_addButton->mapToGlobal(QPoint(0, _addButton->height())));
     });
     connect(_removeButton, &QPushButton::clicked, this, &MainWindow::removeSimulation);
-    connect(_stopButton, &QPushButton::clicked, this, &MainWindow::stopRun);
     connect(_fieldViewer, &FieldViewer::captureRequested, this, [this] { runSimulation(true); });
     connect(_traceView, &TraceView::runRequested, this, [this] { runSimulation(false); });
     connect(_geometryView, &GeometryView::buildRequested, this, &MainWindow::buildGeometry);
     connect(_powerView, &PowerView::runFinished, this, [this](const QString& name, bool ok) {
-        _statusLabel->setText(ok ? tr("%1's power analysis finished.").arg(name) : tr("%1's power analysis failed.").arg(name));
+        showStatus(ok ? tr("%1's power analysis finished.").arg(name) : tr("%1's power analysis failed.").arg(name));
         updateActions();
     });
-    connect(_engineButton, &QPushButton::clicked, this, &MainWindow::showEngineSettings);
+    connect(_engineButton, &QToolButton::clicked, this, &MainWindow::showEngineSettings);
     connect(&_gpuDevices, &GpuDeviceList::changed, this, &MainWindow::updateEngineButton);
     connect(_sidebar, &QTreeWidget::currentItemChanged, this, &MainWindow::selectionChanged);
     connect(_boardView, &BoardView::picked, _inspector, &Inspector::setPick);
@@ -285,10 +307,10 @@ MainWindow::MainWindow() {
     });
 
     connect(&_boardModel, &BoardModel::loadingStarted, this, [this] {
-        _statusLabel->setText(tr("Loading the board through KiCad..."));
+        showStatus(tr("Loading the board through KiCad..."));
     });
     connect(&_boardModel, &BoardModel::loaded, this, [this] {
-        _statusLabel->setText(_boardModel.data() ? tr("Board loaded.") : QString());
+        showStatus(_boardModel.data() ? tr("Board loaded.") : QString());
         _boardView->setBoard(_boardModel.data());
         _fieldViewer->setBoard(_boardModel.data());
         _inspector->setBoard(_boardModel.data());
@@ -301,7 +323,7 @@ MainWindow::MainWindow() {
         scheduleSetRegeneration();
     });
     connect(&_boardModel, &BoardModel::failed, this, [this](const QString& error) {
-        _statusLabel->setText(tr("The board couldn't be loaded."));
+        showStatus(tr("The board couldn't be loaded."));
         QMessageBox::warning(this, tr("KiEMS"), tr("The KiCad board couldn't be loaded:\n\n%1").arg(error));
     });
 
@@ -312,6 +334,7 @@ MainWindow::MainWindow() {
     connect(&_jobs, &JobQueue::changed, this, [this] {
         updateJobList();
         updateRunStatus();
+        refreshSidebarStatus();
         updateActions();
         if (_pages->currentWidget() == _geometryView && currentSimulation() >= 0) {
             _geometryView->setBuilding(_jobs.contains(_document.simulationName(currentSimulation())));
@@ -321,9 +344,9 @@ MainWindow::MainWindow() {
     connect(&_jobs, &JobQueue::jobFinished, this, &MainWindow::jobFinished);
     connect(&_jobs, &JobQueue::drained, this, [this] {
         if (_batchStarted > 1 && _batchFailed > 0) {
-            _statusLabel->setText(tr("%1 of %2 runs failed; the Jobs list says why.").arg(_batchFailed).arg(_batchStarted));
+            showStatus(tr("%1 of %2 runs failed; the Jobs list says why.").arg(_batchFailed).arg(_batchStarted));
         } else if (_batchStarted > 1 && _batchStopped == 0) {
-            _statusLabel->setText(tr("All %1 runs finished.").arg(_batchStarted));
+            showStatus(tr("All %1 runs finished.").arg(_batchStarted));
         }
         _batchStarted = _batchFailed = _batchStopped = 0;
         rebuildSidebar();
@@ -452,17 +475,17 @@ void MainWindow::saveReport() {
     QString path = QFileDialog::getSaveFileName(this, tr("Save Report"), suggested, tr("PDF documents (*.pdf)"));
     if (path.isEmpty()) return;
     if (!path.endsWith(".pdf", Qt::CaseInsensitive)) path += ".pdf";
-    _statusLabel->setText(tr("Writing the report..."));
+    showStatus(tr("Writing the report..."));
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QString error;
     const bool written = writeReport(_document, path, &error, _boardModel.data().get());
     QApplication::restoreOverrideCursor();
     if (!written) {
-        _statusLabel->clear();
+        showStatus(QString());
         QMessageBox::warning(this, tr("KiEMS"), error);
         return;
     }
-    _statusLabel->setText(tr("Saved the report as %1.").arg(QDir::toNativeSeparators(path)));
+    showStatus(tr("Saved the report as %1.").arg(QDir::toNativeSeparators(path)));
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
@@ -499,7 +522,7 @@ void MainWindow::loadBoard() {
         return;
     }
     if (!QFileInfo::exists(board)) {
-        _statusLabel->setText(tr("The linked board %1 doesn't exist.").arg(QDir::toNativeSeparators(board)));
+        showStatus(tr("The linked board %1 doesn't exist.").arg(QDir::toNativeSeparators(board)));
         _boardModel.clear();
         return;
     }
@@ -640,10 +663,10 @@ void MainWindow::runSimulation(bool storeFields) {
     const QString name = _document.simulationName(simulation);
     const Job* running = _jobs.running();
     if (!_jobs.enqueue(name, storeFields)) {
-        _statusLabel->setText(running && running->simulation == name ? tr("%1 is already running.").arg(name)
+        showStatus(running && running->simulation == name ? tr("%1 is already running.").arg(name)
                                                                      : tr("%1 is already queued.").arg(name));
     } else if (_jobs.running() && _jobs.running()->simulation != name) {
-        _statusLabel->setText(tr("%1 is queued.").arg(name));
+        showStatus(tr("%1 is queued.").arg(name));
         _jobsDock->show();
     }
 }
@@ -670,7 +693,7 @@ void MainWindow::runAll() {
     if (_jobs.queuedCount() > 0) _jobsDock->show();
     if (!skipped.isEmpty()) {
         _log->appendPlainText(tr("Not queued, as they have no pin to drive: %1").arg(skipped.join(", ")));
-        _statusLabel->setText(tr("Skipped %n simulation(s) with no pin to drive.", nullptr, static_cast<int>(skipped.size())));
+        showStatus(tr("Skipped %n simulation(s) with no pin to drive.", nullptr, static_cast<int>(skipped.size())));
     }
 }
 
@@ -719,10 +742,15 @@ void MainWindow::jobFinished(const Job& job) {
     }
     if (job.status == Job::Status::Failed) ++_batchFailed;
     if (job.status == Job::Status::Stopped) ++_batchStopped;
+    if (job.status == Job::Status::Failed) (job.geometryOnly ? _failedGeometry : _failedRuns).insert(job.simulation);
+    if (job.status == Job::Status::Succeeded) {
+        _failedGeometry.remove(job.simulation);
+        if (!job.geometryOnly) _failedRuns.remove(job.simulation);
+    }
     switch (job.status) {
-    case Job::Status::Succeeded: _statusLabel->setText(tr("%1 finished.").arg(job.simulation)); break;
-    case Job::Status::Stopped: _statusLabel->setText(tr("%1 stopped.").arg(job.simulation)); break;
-    default: _statusLabel->setText(tr("%1: %2").arg(job.simulation, job.message)); break;
+    case Job::Status::Succeeded: showStatus(tr("%1 finished.").arg(job.simulation)); break;
+    case Job::Status::Stopped: showStatus(tr("%1 stopped.").arg(job.simulation)); break;
+    default: showStatus(tr("%1: %2").arg(job.simulation, job.message)); break;
     }
     rebuildSidebar();
     // A lone run shows its results (or why it failed) straight away. In a batch, the page in view
@@ -815,40 +843,41 @@ void MainWindow::updateRunningJobTime() {
 
 void MainWindow::updateRunStatus() {
     const Job* job = _jobs.running();
+    const int queued = _jobs.queuedCount();
     if (!job) {
-        _progress->hide();
-        _stopButton->hide();
         _runClock->stop();
+        _statusDisplay->setActivity(queued > 0 ? tr("%n simulation(s) queued", nullptr, queued) : _lastStatus, false, std::nullopt);
+        _statusDisplay->setToolTip(QString());
         return;
     }
     if (!_runClock->isActive()) _runClock->start();
-    const int queued = _jobs.queuedCount();
-    QString text = tr("%1: %2").arg(job->simulation, job->stage);
+    // "Simulating “USB” — 42% · port 1 of 2 · about 1:05 left · 2 more queued"
+    QString text = QString("%1 \u201C%2\u201D").arg(job->stage.isEmpty() ? tr("Starting") : job->stage, job->simulation);
+    if (job->fraction >= 0) text += QString(" \u2014 %1%").arg(static_cast<int>(std::lround(job->fraction * 100)));
+    QStringList parts{text};
     const RunTiming timing = _runner.timing();
-    if (timing.ports > 1 && timing.port > 0) text += tr(", port %1 of %2").arg(timing.port).arg(timing.ports);
-    text += tr(" · %1").arg(formatDuration(timing.elapsed));
+    if (timing.ports > 1 && timing.port > 0) parts << tr("port %1 of %2").arg(timing.port).arg(timing.ports);
     if (timing.remaining >= 0) {
-        text += timeLeft(timing);
+        parts << (timing.remaining < 1 ? tr("finishing") : tr("about %1 left").arg(formatDuration(timing.remaining)));
     } else if (!job->geometryOnly && job->stage == tr("Simulating")) {
-        text += tr(", estimating the time left...");
+        parts << tr("estimating the time left");
     }
-    if (queued > 0) text += tr(" (%n more queued)", nullptr, queued);
-    _statusLabel->setText(text);
-    _statusLabel->setToolTip(timing.remaining >= 0
-                                 ? (timing.decayLimited
-                                        ? tr("Expected to stop when the field energy has decayed by %1 dB, judged "
-                                             "from how fast it's decaying now.")
-                                              .arg(RunEstimator::kTargetDecayDB)
-                                        : tr("Expected to run to its step limit, at the current speed."))
-                                 : QString());
-    if (job->fraction < 0) {
-        _progress->setRange(0, 0);
-    } else {
-        _progress->setRange(0, 1000);
-        _progress->setValue(static_cast<int>(job->fraction * 1000));
-    }
-    _progress->show();
-    _stopButton->show();
+    if (queued > 0) parts << tr("%n more queued", nullptr, queued);
+    _statusDisplay->setActivity(parts.join(QString::fromUtf8(" \u00B7 ")), true,
+                                job->fraction >= 0 ? std::optional<double>(job->fraction) : std::nullopt);
+    _statusDisplay->setToolTip(tr("%1 so far").arg(formatDuration(timing.elapsed)) +
+                               (timing.remaining >= 0
+                                    ? (timing.decayLimited
+                                           ? tr("; expected to stop when the field energy has decayed by %1 dB, judged "
+                                                "from how fast it's decaying now.")
+                                                 .arg(RunEstimator::kTargetDecayDB)
+                                           : tr("; expected to run to its step limit, at the current speed."))
+                                    : QString()));
+}
+
+void MainWindow::showStatus(const QString& message) {
+    _lastStatus = message;
+    if (!_jobs.running()) updateRunStatus();
 }
 
 void MainWindow::stopRun() {
@@ -908,7 +937,7 @@ void MainWindow::regenerateChangedSets() {
             for (int i = 0; i < _document.simulationCount(); ++i) {
                 if (!_document.isSimulationSet(i) && _document.generatedBySet(i) == id) ++generated;
             }
-            _statusLabel->setText(tr("%1 now generates %n simulation(s).", nullptr, generated).arg(name));
+            showStatus(tr("%1 now generates %n simulation(s).", nullptr, generated).arg(name));
         }
     }
     for (auto it = _setSnapshots.begin(); it != _setSnapshots.end();) {
@@ -961,6 +990,25 @@ void MainWindow::rebuildSidebar() {
         if ((*it)->childCount() > 0) _expanded.insert(expansionKey(*it), (*it)->isExpanded());
     }
     _sidebar->clear();
+    const QColor ink = palette().color(QPalette::WindowText);
+    const auto separator = [this] {
+        auto* item = new QTreeWidgetItem(_sidebar);
+        item->setData(0, kSidebarSeparatorRole, true);
+        item->setData(0, kSimulationRole, -1);
+        item->setData(0, kPageRole, -1);
+        item->setFlags(Qt::NoItemFlags);
+        return item;
+    };
+    if (_document.isOpen()) {
+        // Board Setup, pinned above every simulation, as on macOS.
+        auto* setup = new QTreeWidgetItem(_sidebar, {tr("Board Setup")});
+        setup->setIcon(0, icons::icon(icons::Glyph::Sliders, ink));
+        setup->setData(0, kSimulationRole, -1);
+        setup->setData(0, kPageRole, static_cast<int>(Page::BoardSetup));
+        setup->setToolTip(0, tr("The board's defaults: its ground, impedances, bit rate and pin roles."));
+        if (selectedPage == static_cast<int>(Page::BoardSetup)) _sidebar->setCurrentItem(setup);
+        if (_document.simulationCount() > 0) separator();
+    }
     for (int i = 0; i < _document.simulationCount(); ++i) {
         if (_document.isSimulationSet(i)) {
             // A set's row holds the simulations it generated, sorted by name.
@@ -968,10 +1016,7 @@ void MainWindow::rebuildSidebar() {
             set->setData(0, kSimulationRole, i);
             set->setData(0, kPageRole, -1);
             set->setData(0, Qt::UserRole + 2, "set:" + _document.simulationSetId(i));
-            set->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
-            QFont font = set->font(0);
-            font.setBold(true);
-            set->setFont(0, font);
+            set->setIcon(0, icons::icon(icons::Glyph::Stack, ink));
             const QList<int> generated = generatedSimulations(_document, i);
             set->setToolTip(0, tr("Simulation Set: generates %n simulation(s).", nullptr, static_cast<int>(generated.size())));
             if (i == selectedSimulation) _sidebar->setCurrentItem(set);
@@ -983,9 +1028,10 @@ void MainWindow::rebuildSidebar() {
     }
     // Power analyses after the simulations.
     const auto analyses = powerAnalyses(_document);
+    if (!analyses.empty()) separator();
     for (int i = 0; i < static_cast<int>(analyses.size()); ++i) {
         auto* item = new QTreeWidgetItem(_sidebar, {QString::fromStdString(analyses[static_cast<std::size_t>(i)].name)});
-        item->setIcon(0, boltIcon());
+        item->setIcon(0, icons::icon(icons::Glyph::Bolt, QColor(0xf2, 0xc0, 0x3b)));
         item->setData(0, kSimulationRole, -1);
         item->setData(0, kPageRole, static_cast<int>(Page::Power));
         item->setData(0, kPowerRole, i);
@@ -997,46 +1043,35 @@ void MainWindow::rebuildSidebar() {
         for (QTreeWidgetItem* parent = current->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
     }
     _rebuildingSidebar = false;
+    refreshSidebarStatus();
 }
 
 QTreeWidgetItem* MainWindow::addSimulationItem(QTreeWidgetItem* parent, int i, int selectedSimulation,
                                                int selectedPage) {
-    const QColor accent = palette().color(QPalette::Highlight);
     const QString name = _document.simulationName(i);
     auto* top = parent ? new QTreeWidgetItem(parent, {name}) : new QTreeWidgetItem(_sidebar, {name});
     top->setData(0, kSimulationRole, i);
     top->setData(0, kPageRole, -1);
     top->setData(0, Qt::UserRole + 2, name);
-    QFont font = top->font(0);
-    font.setBold(true);
-    top->setFont(0, font);
-    const Job* job = _jobs.running();
-    const bool running = job && job->simulation == name;
-    const bool runningStoresFields = running && job->storeFields;
-    if (running) top->setToolTip(0, tr("Running"));
-    else if (_jobs.contains(name)) top->setToolTip(0, tr("Queued"));
-    auto* board = new QTreeWidgetItem(top, {tr("Board")});
-    board->setData(0, kSimulationRole, i);
-    board->setData(0, kPageRole, static_cast<int>(Page::Board));
-    board->setIcon(0, statusDot(_document.hasGeometry(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
-    auto* geometry = new QTreeWidgetItem(top, {tr("Geometry")});
-    geometry->setData(0, kSimulationRole, i);
-    geometry->setData(0, kPageRole, static_cast<int>(Page::Geometry));
-    geometry->setIcon(0, statusDot(_document.hasGeometry(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
-    auto* results = new QTreeWidgetItem(top, {tr("Simulation Results")});
-    results->setData(0, kSimulationRole, i);
-    results->setData(0, kPageRole, static_cast<int>(Page::Results));
-    results->setIcon(0, statusDot(_document.hasResults(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
-    auto* fields = new QTreeWidgetItem(top, {tr("Field Viewer")});
-    fields->setData(0, kSimulationRole, i);
-    fields->setData(0, kPageRole, static_cast<int>(Page::Fields));
-    const bool haveFields = !FieldViewer::findSeries(_document.simulationDir(i)).empty();
-    fields->setIcon(0, statusDot(haveFields, runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
-    auto* trace = new QTreeWidgetItem(top, {tr("Trace")});
-    trace->setData(0, kSimulationRole, i);
-    trace->setData(0, kPageRole, static_cast<int>(Page::Trace));
-    trace->setToolTip(0, tr("The impedance and ringing along the simulated traces."));
-    trace->setIcon(0, statusDot(_document.hasResults(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
+    top->setToolTip(0, tr("%1: its board, involved nets and settings").arg(name));
+    // The pages, in the grey of the macOS list's secondary rows.
+    QColor secondary = palette().color(QPalette::WindowText);
+    secondary.setAlphaF(0.78);
+    const auto page = [&](const QString& title, icons::Glyph glyph, Page kind, const QString& tip) {
+        auto* item = new QTreeWidgetItem(top, {title});
+        item->setData(0, kSimulationRole, i);
+        item->setData(0, kPageRole, static_cast<int>(kind));
+        item->setIcon(0, icons::icon(glyph, secondary));
+        item->setForeground(0, secondary);
+        item->setToolTip(0, tip);
+        return item;
+    };
+    auto* geometry = page(tr("Geometry"), icons::Glyph::Cube, Page::Geometry, tr("The simulated copper and its mesh, in 3D."));
+    auto* results = page(tr("Simulation Results"), icons::Glyph::Chart, Page::Results,
+                         tr("S-parameters, impedance, eyes and the time-domain response."));
+    auto* fields = page(tr("Field Viewer"), icons::Glyph::Waveform, Page::Fields,
+                        tr("The fields over time, from a run that stored them."));
+    auto* trace = page(tr("Trace"), icons::Glyph::Trace, Page::Trace, tr("The impedance and ringing along the simulated traces."));
     // A set's simulations start folded, as there can be many.
     top->setExpanded(_expanded.value(expansionKey(top), parent == nullptr));
     if (i == selectedSimulation) {
@@ -1044,7 +1079,6 @@ QTreeWidgetItem* MainWindow::addSimulationItem(QTreeWidgetItem* parent, int i, i
                                  : selectedPage == static_cast<int>(Page::Fields)   ? fields
                                  : selectedPage == static_cast<int>(Page::Trace)    ? trace
                                  : selectedPage == static_cast<int>(Page::Geometry) ? geometry
-                                 : selectedPage == static_cast<int>(Page::Board)    ? board
                                                                                     : top);
     }
     return top;
@@ -1055,6 +1089,24 @@ void MainWindow::selectionChanged() {
     const QTreeWidgetItem* item = _sidebar->currentItem();
     const int simulation = item ? item->data(0, kSimulationRole).toInt() : -1;
     const int page = item ? item->data(0, kPageRole).toInt() : -1;
+    if (page == static_cast<int>(Page::BoardSetup)) {
+        _inspector->setSimulation(-1);
+        _inspector->showBoardSetup();
+        _pages->setCurrentWidget(_boardPage);
+        _inspector->show();
+        updateHighlights();
+        updateActions();
+        return;
+    }
+    if (!item || (simulation < 0 && page < 0)) {
+        _inspector->setSimulation(-1);
+        static_cast<QLabel*>(_emptyPage)->setText(_document.isOpen() ? tr("No Simulation Selected")
+                                                                     : tr("Open or create a simulation document to begin."));
+        _pages->setCurrentWidget(_emptyPage);
+        _inspector->hide();
+        updateActions();
+        return;
+    }
     if (page == static_cast<int>(Page::Power)) {
         _inspector->setSimulation(-1);
         _powerView->showAnalysis(item->data(0, kPowerRole).toInt());
@@ -1103,7 +1155,7 @@ void MainWindow::showPage(int simulation, Page page) {
         if (item->data(0, kSimulationRole).toInt() != simulation || item->data(0, kPageRole).toInt() != -1) continue;
         // A set's row has no pages of its own.
         QTreeWidgetItem* target = item;
-        for (int c = 0; c < item->childCount(); ++c) {
+        for (int c = 0; c < item->childCount() && page != Page::Board; ++c) {
             if (item->child(c)->data(0, kPageRole).toInt() == static_cast<int>(page)) target = item->child(c);
         }
         for (QTreeWidgetItem* parent = target->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
@@ -1150,15 +1202,12 @@ void MainWindow::populateLayerList() {
 void MainWindow::updateTitle() {
     if (!_document.isOpen()) {
         setWindowTitle(tr("KiEMS"));
-        _projectLabel->setText(tr("No document open"));
-        _chooseBoardButton->setEnabled(false);
+        _statusDisplay->setProject({}, {});
         return;
     }
     setWindowTitle(QString("%1[*] - KiEMS").arg(_document.displayName()));
     setWindowModified(_document.isModified());
-    const QString board = _document.kicadPcbPath();
-    _projectLabel->setText(board.isEmpty() ? tr("No KiCad board linked") : QDir::toNativeSeparators(board));
-    _chooseBoardButton->setEnabled(true);
+    _statusDisplay->setProject(_document.displayName(), _document.kicadPcbPath());
 }
 
 void MainWindow::updateActions() {
@@ -1185,6 +1234,132 @@ void MainWindow::updateActions() {
     _runFieldsAction->setEnabled(_runAction->isEnabled() && currentPowerAnalysis() < 0);
     _runAllAction->setEnabled(open && _document.simulationCount() > 0 && canRun);
     _stopAction->setEnabled(_jobs.isBusy());
+}
+
+bool MainWindow::failsTests(int simulation) const {
+    const QString resultsDir = _document.resultsDir(simulation);
+    const QFileInfo eyes(QDir(resultsDir).filePath("eyes.json"));
+    if (!eyes.exists()) return false;
+    const qint64 stamp = eyes.lastModified().toMSecsSinceEpoch();
+    if (const auto it = _testVerdicts.constFind(resultsDir); it != _testVerdicts.constEnd() && it->first == stamp) return it->second;
+    const bool fails = judgeSimulation(true, EyeResults::load(resultsDir)).kind == SimulationVerdict::Kind::Fail;
+    _testVerdicts.insert(resultsDir, {stamp, fails});
+    return fails;
+}
+
+int MainWindow::pageStatus(int simulation, Page page, double* progress) const {
+    *progress = -1;
+    const QString name = _document.simulationName(simulation);
+    const Job* job = _jobs.running();
+    if (job && job->simulation == name) {
+        // The page the run is filling: geometry first, then the results (and the fields with them).
+        const bool buildingGeometry = job->geometryOnly || job->stage == tr("Building geometry") || job->stage == tr("Starting");
+        const bool runs = page == Page::Geometry ? buildingGeometry
+                          : page == Page::Results || page == Page::Trace ? !job->geometryOnly
+                          : page == Page::Fields ? job->storeFields
+                                                 : false;
+        if (runs) {
+            if (!buildingGeometry || page == Page::Geometry) *progress = job->fraction;
+            return static_cast<int>(SidebarStatus::Running);
+        }
+    } else if (_jobs.contains(name)) {
+        for (const Job& queued : _jobs.jobs()) {
+            if (queued.simulation != name || queued.status != Job::Status::Queued) continue;
+            const bool queues = page == Page::Geometry || (!queued.geometryOnly && (page != Page::Fields || queued.storeFields));
+            if (queues) return static_cast<int>(SidebarStatus::Queued);
+        }
+    }
+    switch (page) {
+    case Page::Geometry:
+        if (_failedGeometry.contains(name)) return static_cast<int>(SidebarStatus::Failed);
+        return static_cast<int>(_document.hasGeometry(simulation) ? SidebarStatus::Done : SidebarStatus::NotRun);
+    case Page::Results:
+        if (_failedRuns.contains(name)) return static_cast<int>(SidebarStatus::Failed);
+        if (!_document.hasResults(simulation)) return static_cast<int>(SidebarStatus::NotRun);
+        return static_cast<int>(failsTests(simulation) ? SidebarStatus::TestsFailed : SidebarStatus::Done);
+    case Page::Fields:
+        return static_cast<int>(FieldViewer::findSeries(_document.simulationDir(simulation)).empty() ? SidebarStatus::NotRun
+                                                                                                     : SidebarStatus::Done);
+    case Page::Trace:
+        return static_cast<int>(_document.hasResults(simulation) ? SidebarStatus::Done : SidebarStatus::NotRun);
+    default:
+        return static_cast<int>(SidebarStatus::None);
+    }
+}
+
+void MainWindow::refreshSidebarStatus() {
+    if (!_document.isOpen()) return;
+    for (QTreeWidgetItemIterator it(_sidebar); *it; ++it) {
+        QTreeWidgetItem* item = *it;
+        const int simulation = item->data(0, kSimulationRole).toInt();
+        const int page = item->data(0, kPageRole).toInt();
+        if (simulation < 0 || page < 0 || simulation >= _document.simulationCount()) continue;
+        double progress = -1;
+        const int status = pageStatus(simulation, static_cast<Page>(page), &progress);
+        if (item->data(0, kSidebarStatusRole).toInt() != status) item->setData(0, kSidebarStatusRole, status);
+        if (item->data(0, kSidebarProgressRole).toDouble() != progress) item->setData(0, kSidebarProgressRole, progress);
+    }
+    refreshIssues();
+}
+
+QList<QPair<int, MainWindow::Page>> MainWindow::issues(bool failedTests) const {
+    QList<QPair<int, Page>> stops;
+    for (QTreeWidgetItemIterator it(_sidebar); *it; ++it) {
+        const QTreeWidgetItem* item = *it;
+        const int simulation = item->data(0, kSimulationRole).toInt();
+        const int page = item->data(0, kPageRole).toInt();
+        if (simulation < 0 || page < 0) continue;
+        const auto status = static_cast<SidebarStatus>(item->data(0, kSidebarStatusRole).toInt());
+        if (failedTests ? status == SidebarStatus::TestsFailed : status == SidebarStatus::Failed) {
+            stops.append({simulation, static_cast<Page>(page)});
+        }
+    }
+    return stops;
+}
+
+void MainWindow::refreshIssues() {
+    _statusDisplay->setIssueCounts(static_cast<int>(issues(true).size()), static_cast<int>(issues(false).size()));
+}
+
+void MainWindow::showNextIssue(bool failedTests) {
+    // The next after the selected row, wrapping round, so repeated clicks step through them all.
+    const QList<QPair<int, Page>> stops = issues(failedTests);
+    if (stops.isEmpty()) return;
+    const QTreeWidgetItem* current = _sidebar->currentItem();
+    const QPair<int, Page> here = current ? QPair<int, Page>(current->data(0, kSimulationRole).toInt(),
+                                                               static_cast<Page>(current->data(0, kPageRole).toInt()))
+                                          : QPair<int, Page>(-1, Page::Board);
+    const qsizetype at = stops.indexOf(here);
+    const QPair<int, Page> next = stops[at < 0 ? 0 : (at + 1) % stops.size()];
+    showPage(next.first, next.second);
+}
+
+void MainWindow::showSidebarMenu(const QPoint& at) {
+    QTreeWidgetItem* item = _sidebar->itemAt(at);
+    if (!item || item->data(0, kSidebarSeparatorRole).toBool()) return;
+    _sidebar->setCurrentItem(item);
+    const int simulation = item->data(0, kSimulationRole).toInt();
+    const int page = item->data(0, kPageRole).toInt();
+    QMenu menu(this);
+    if (simulation >= 0) {
+        if (page == static_cast<int>(Page::Geometry)) {
+            QAction* build = menu.addAction(tr("Build Geometry"), this, &MainWindow::buildGeometry);
+            build->setEnabled(_runAction->isEnabled());
+        }
+        menu.addAction(_runAction);
+        menu.addAction(_runFieldsAction);
+        if (page < 0) {
+            menu.addSeparator();
+            menu.addAction(_removeAction);
+        }
+    } else if (page == static_cast<int>(Page::Power)) {
+        menu.addAction(_runAction);
+        menu.addSeparator();
+        menu.addAction(_removeAction);
+    } else {
+        return;
+    }
+    menu.exec(_sidebar->viewport()->mapToGlobal(at));
 }
 
 } // namespace kiems_gui
