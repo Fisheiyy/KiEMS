@@ -10,6 +10,7 @@
 #include "JobQueue.hpp"
 #include "PowerAnalysis.hpp"
 #include "PowerView.hpp"
+#include "RunEstimate.hpp"
 #include "QuantityEdit.hpp"
 #include "Report.hpp"
 #include "ResultsView.hpp"
@@ -1152,6 +1153,75 @@ private slots:
             QFile::remove(QDir(snapshots).filePath("power_report.pdf"));
             QFile::copy(pdf, QDir(snapshots).filePath("power_report.pdf"));
         }
+    }
+
+    void runEstimate() {
+        using kiems_gui::RunEstimator;
+        const auto near = [](double actual, double expected, double tolerance) {
+            return std::abs(actual - expected) <= tolerance;
+        };
+        // One port, running to its step limit at 1625 steps/s. The in-process engine prints each
+        // tick twice; the copy doesn't count as a sample.
+        RunEstimator run;
+        run.start(0);
+        QCOMPARE(run.timing(1).remaining, -1.0); // nothing to go on yet
+        run.feed("[INFO ] Running simulation", 1);
+        run.feed("[INFO ] [USB] Simulating with excitation on port #1", 1);
+        run.feed("[INFO ] [Copper] Setup: starting...", 2);
+        run.feed("[INFO ] [Copper] FDTD run: step 0/100000 (0.0%) | energy decay 0.00/60.00dB (0.0%)", 5);
+        run.feed("Copper: [@     4.0s] timestep 6500/100000 -- GPU allocated: 0.127 GB", 9);
+        run.feed("[INFO ] [Copper] FDTD run: step 6500/100000 (6.5%) | energy decay 0.00/60.00dB (0.0%)", 9);
+        run.feed("[INFO ] [Copper] FDTD run: step 13000/100000 (13.0%) | energy decay 1.00/60.00dB (1.7%)", 13);
+        auto timing = run.timing(13);
+        QCOMPARE(timing.port, 1);
+        QCOMPARE(timing.ports, 1);
+        QVERIFY2(near(timing.remaining, 87000.0 / 1625, 0.01), qPrintable(QString::number(timing.remaining)));
+        QVERIFY(!timing.decayLimited);
+        QVERIFY(near(run.timing(15).remaining, 87000.0 / 1625 - 2, 0.01)); // counting down between lines
+        QVERIFY(near(run.timing(13).simulatingFraction, 12.0 / (12.0 + 87000.0 / 1625), 1e-6));
+        // Then the energy starts falling 10 dB every 6500 steps. Three samples in the latter half of
+        // the run aren't enough to go on; with a fourth, at 40 dB, it'll reach 60 in 13000 more.
+        run.feed("[INFO ] [Copper] FDTD run: step 19500/100000 (19.5%) | energy decay 10.00/60.00dB (16.7%)", 17);
+        run.feed("[INFO ] [Copper] FDTD run: step 26000/100000 (26.0%) | energy decay 20.00/60.00dB (33.3%)", 21);
+        run.feed("[INFO ] [Copper] FDTD run: step 32500/100000 (32.5%) | energy decay 30.00/60.00dB (50.0%)", 25);
+        QVERIFY(!run.timing(25).decayLimited);
+        run.feed("[INFO ] [Copper] FDTD run: step 39000/100000 (39.0%) | energy decay 40.00/60.00dB (66.7%)", 29);
+        timing = run.timing(29);
+        QVERIFY(timing.decayLimited);
+        QVERIFY2(near(timing.remaining, 13000.0 / 1625, 0.01), qPrintable(QString::number(timing.remaining)));
+        run.feed("[INFO ] Processing all data from simulation. Calculating S-parameters and impedance", 40);
+        QCOMPARE(run.timing(41).remaining, 0.0);
+
+        // Two ports through the CPU worker, whose line carries the decay but no setup line: the
+        // second port is found by its steps starting again, and expected to take as long as the first.
+        RunEstimator worker;
+        worker.start(0);
+        worker.feed("[INFO ] Running simulation", 0);
+        worker.feed("[INFO ] [LED] Simulating with excitation on port #0", 0);
+        worker.feed("[INFO ] [LED] Simulating with excitation on port #1", 0);
+        worker.feed("Copper: [@     4.0s] timestep 4000/20000 || Speed: 0.0010 s/step || Energy: ~1e-03 (-0.50dB)", 4);
+        worker.feed("Copper: [@     8.0s] timestep 8000/20000 || Speed: 0.0010 s/step || Energy: ~1e-03 (-0.60dB)", 8);
+        timing = worker.timing(8);
+        QCOMPARE(timing.ports, 2);
+        QCOMPARE(timing.port, 1);
+        // 12000 steps of this port, then 20000 of the next plus the 4 s this one took to start.
+        QVERIFY2(near(timing.remaining, 12.0 + 20.0 + 4.0, 0.01), qPrintable(QString::number(timing.remaining)));
+        worker.feed("Copper: [@    20.0s] timestep 20000/20000 || Speed: 0.0010 s/step || Energy: ~1e-03 (-0.70dB)", 20);
+        worker.feed("Copper: [@     4.0s] timestep 4000/20000 || Speed: 0.0010 s/step || Energy: ~1e-03 (-0.50dB)", 26);
+        worker.feed("Copper: [@     8.0s] timestep 8000/20000 || Speed: 0.0010 s/step || Energy: ~1e-03 (-0.60dB)", 30);
+        timing = worker.timing(30);
+        QCOMPARE(timing.port, 2);
+        QVERIFY2(near(timing.remaining, 12.0, 0.01), qPrintable(QString::number(timing.remaining)));
+
+        // Before any steps, the last run of the same simulation is the estimate.
+        RunEstimator again;
+        again.start(100, 60);
+        QVERIFY(near(again.timing(110).remaining, 50, 1e-9));
+        QCOMPARE(again.timing(200).remaining, 0.0);
+
+        QCOMPARE(kiems_gui::formatDuration(42.4), QString("42 s"));
+        QCOMPARE(kiems_gui::formatDuration(187), QString("3:07"));
+        QCOMPARE(kiems_gui::formatDuration(3727), QString("1:02:07"));
     }
 
     void jobQueue() {

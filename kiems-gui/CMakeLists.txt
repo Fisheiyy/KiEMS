@@ -47,6 +47,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     Report.hpp
     ResultsView.cpp
     ResultsView.hpp
+    RunEstimate.cpp
+    RunEstimate.hpp
     SelectionPanel.cpp
     SelectionPanel.hpp
     SettingsPanel.cpp
@@ -123,6 +125,8 @@ if(TARGET Qt6::Test)
         Report.hpp
         ResultsView.cpp
         ResultsView.hpp
+        RunEstimate.cpp
+        RunEstimate.hpp
         SettingsPanel.cpp
         SettingsPanel.hpp
         SimulationEditor.cpp

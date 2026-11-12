@@ -10,6 +10,7 @@
 #include "PipelineRunner.hpp"
 
 #include <QHash>
+#include <QTimer>
 #include <QMainWindow>
 
 #include <nlohmann/json.hpp>
@@ -82,6 +83,9 @@ private:
     void jobFinished(const Job& job);
     void updateJobList();
     void updateRunStatus();
+    /// The running job's time so far and time left, in its row of the Jobs list.
+    void updateRunningJobTime();
+    QString timeText(const Job& job) const;
     void showEngineSettings();
     void updateEngineButton();
 
@@ -138,6 +142,15 @@ private:
     QProgressBar* _progress;
     QPushButton* _stopButton;
     QPushButton* _engineButton;
+    /// Ticks the running job's elapsed time and countdown between log lines.
+    QTimer* _runClock;
+    /// How long each simulation's last full run took, in seconds: what a run of it is first
+    /// expected to take, and what a queued one shows.
+    QHash<QString, double> _runSeconds;
+    /// How long each finished job took, by job id.
+    QHash<int, double> _jobSeconds;
+    /// The job the runner's clock is timing (one that failed to start never had it).
+    int _timedJobId = -1;
 
     QAction* _saveAction;
     QAction* _runAction;

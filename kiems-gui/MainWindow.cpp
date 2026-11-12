@@ -199,7 +199,7 @@ MainWindow::MainWindow() {
     // The queue of runs, like the macOS app's Jobs window.
     _jobList = new QTreeWidget;
     _jobList->setObjectName("jobList");
-    _jobList->setHeaderLabels({tr("Simulation"), tr("Status"), tr("Progress")});
+    _jobList->setHeaderLabels({tr("Simulation"), tr("Status"), tr("Progress"), tr("Time")});
     _jobList->setRootIsDecorated(false);
     _jobList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _jobList->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -225,6 +225,12 @@ MainWindow::MainWindow() {
     tabifyDockWidget(_logDock, _jobsDock);
     _jobsDock->hide();
     _statusLabel = new QLabel;
+    _runClock = new QTimer(this);
+    _runClock->setInterval(1000);
+    connect(_runClock, &QTimer::timeout, this, [this] {
+        updateRunStatus();
+        updateRunningJobTime();
+    });
     _progress = new QProgressBar;
     _progress->setMaximumWidth(260);
     _progress->setTextVisible(false);
@@ -690,14 +696,22 @@ bool MainWindow::startJob(const Job& job, QString* error) {
     // let go of the Field Viewer's series first if it's showing this simulation.
     if (_fieldViewer->simulationDirectory() == _document.simulationDir(simulation)) _fieldViewer->close();
     if (!_runner.start(_document.configPath(), _document.kicadPcbPath(), job.simulation, arguments, error,
-                       job.geometryOnly)) {
+                       job.geometryOnly, job.geometryOnly ? -1.0 : _runSeconds.value(job.simulation, -1.0))) {
         return false;
     }
+    _timedJobId = job.id;
     _logDock->show();
     return true;
 }
 
 void MainWindow::jobFinished(const Job& job) {
+    if (job.id == _timedJobId) {
+        const double seconds = _runner.timing().elapsed;
+        _jobSeconds.insert(job.id, seconds);
+        // A full run's length, for estimating the next one (fields stored or not, it's the same run).
+        if (job.status == Job::Status::Succeeded && !job.geometryOnly) _runSeconds.insert(job.simulation, seconds);
+        updateJobList();
+    }
     if (job.status == Job::Status::Failed) ++_batchFailed;
     if (job.status == Job::Status::Stopped) ++_batchStopped;
     switch (job.status) {
@@ -737,7 +751,7 @@ void MainWindow::updateJobList() {
                 _jobList, {job.geometryOnly  ? tr("%1 (geometry)").arg(job.simulation)
                            : job.storeFields ? tr("%1 (with fields)").arg(job.simulation)
                                              : job.simulation,
-                           status, progress});
+                           status, progress, timeText(job)});
             item->setData(0, Qt::UserRole, job.id);
             if (!job.message.isEmpty()) {
                 item->setToolTip(0, job.message);
@@ -753,8 +767,45 @@ void MainWindow::updateJobList() {
     }
     _jobList->resizeColumnToContents(1);
     _jobList->resizeColumnToContents(2);
+    _jobList->resizeColumnToContents(3);
     _cancelJobButton->setEnabled(canCancel);
     _clearJobsButton->setEnabled(anyFinished);
+}
+
+namespace {
+
+/// ", about 1:05 left", or ", finishing" once the estimate has run out.
+QString timeLeft(const RunTiming& timing) {
+    if (timing.remaining < 0) return QString();
+    if (timing.remaining < 1) return MainWindow::tr(", finishing");
+    return MainWindow::tr(", about %1 left").arg(formatDuration(timing.remaining));
+}
+
+} // namespace
+
+QString MainWindow::timeText(const Job& job) const {
+    switch (job.status) {
+    case Job::Status::Running: {
+        const RunTiming timing = _runner.timing();
+        return formatDuration(timing.elapsed) + timeLeft(timing);
+    }
+    case Job::Status::Queued:
+        if (!job.geometryOnly && _runSeconds.contains(job.simulation)) {
+            return tr("about %1").arg(formatDuration(_runSeconds.value(job.simulation)));
+        }
+        return QString();
+    default:
+        return _jobSeconds.contains(job.id) ? formatDuration(_jobSeconds.value(job.id)) : QString();
+    }
+}
+
+void MainWindow::updateRunningJobTime() {
+    const Job* job = _jobs.running();
+    if (!job) return;
+    for (int i = 0; i < _jobList->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = _jobList->topLevelItem(i);
+        if (item->data(0, Qt::UserRole).toInt() == job->id) item->setText(3, timeText(*job));
+    }
 }
 
 void MainWindow::updateRunStatus() {
@@ -762,12 +813,29 @@ void MainWindow::updateRunStatus() {
     if (!job) {
         _progress->hide();
         _stopButton->hide();
+        _runClock->stop();
         return;
     }
+    if (!_runClock->isActive()) _runClock->start();
     const int queued = _jobs.queuedCount();
     QString text = tr("%1: %2").arg(job->simulation, job->stage);
+    const RunTiming timing = _runner.timing();
+    if (timing.ports > 1 && timing.port > 0) text += tr(", port %1 of %2").arg(timing.port).arg(timing.ports);
+    text += tr(" · %1").arg(formatDuration(timing.elapsed));
+    if (timing.remaining >= 0) {
+        text += timeLeft(timing);
+    } else if (!job->geometryOnly && job->stage == tr("Simulating")) {
+        text += tr(", estimating the time left...");
+    }
     if (queued > 0) text += tr(" (%n more queued)", nullptr, queued);
     _statusLabel->setText(text);
+    _statusLabel->setToolTip(timing.remaining >= 0
+                                 ? (timing.decayLimited
+                                        ? tr("Expected to stop when the field energy has decayed by %1 dB, judged "
+                                             "from how fast it's decaying now.")
+                                              .arg(RunEstimator::kTargetDecayDB)
+                                        : tr("Expected to run to its step limit, at the current speed."))
+                                 : QString());
     if (job->fraction < 0) {
         _progress->setRange(0, 0);
     } else {

@@ -5,6 +5,8 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 
+#include <algorithm>
+
 #if !defined(Q_OS_WIN)
 #include <csignal>
 #include <unistd.h>
@@ -29,7 +31,8 @@ QString PipelineRunner::cliPath() {
 }
 
 bool PipelineRunner::start(const QString& configPath, const QString& kicadPcbPath, const QString& simulation,
-                           const QStringList& engineArguments, QString* error, bool geometryOnly) {
+                           const QStringList& engineArguments, QString* error, bool geometryOnly,
+                           double previousSeconds) {
     if (isRunning()) {
         if (error) *error = tr("A simulation is already running.");
         return false;
@@ -43,6 +46,9 @@ bool PipelineRunner::start(const QString& configPath, const QString& kicadPcbPat
     _lastError.clear();
     _pending.clear();
     _stopping = false;
+    _fraction = -1;
+    _clock.start();
+    _estimator.start(0, previousSeconds);
     _process = new QProcess(this);
     _process->setProgram(cli);
     QStringList arguments{"-c", configPath, "--simulation", simulation, geometryOnly ? "--geometry" : "--all"};
@@ -77,6 +83,10 @@ bool PipelineRunner::start(const QString& configPath, const QString& kicadPcbPat
     }
     emit progress(tr("Starting"), -1);
     return true;
+}
+
+RunTiming PipelineRunner::timing() const {
+    return _estimator.timing(_clock.isValid() ? _clock.elapsed() / 1000.0 : 0.0);
 }
 
 bool PipelineRunner::isRunning() const {
@@ -123,10 +133,23 @@ void PipelineRunner::handleLine(const QString& rawText) {
         message = message.section(" (", 0, 0).trimmed();
         _lastError = message.isEmpty() ? text : message;
     }
+    const double now = _clock.isValid() ? _clock.elapsed() / 1000.0 : 0.0;
+    _estimator.feed(text, now);
     if (auto match = timestep.match(text); match.hasMatch()) {
+        // The whole simulation stage's progress, over every port, once there's an estimate to
+        // measure it by; until then this port's steps.
+        const RunTiming timing = _estimator.timing(now);
         const double done = match.captured(1).toDouble();
         const double total = match.captured(2).toDouble();
-        if (total > 0) emit progress(tr("Simulating"), done / total);
+        double fraction = timing.simulatingFraction >= 0 ? timing.simulatingFraction
+                          : total > 0 && timing.ports <= 1 ? done / total
+                                                           : -1;
+        // Never backwards, nor back to "no measure" between ports.
+        if (fraction >= 0 || _fraction >= 0) {
+            _fraction = std::max(_fraction, fraction);
+            fraction = _fraction;
+        }
+        emit progress(tr("Simulating"), fraction);
     } else if (auto stage = stageStep.match(text); stage.hasMatch()) {
         emit progress(stage.captured(1) == "Geometry" ? tr("Building geometry") : stage.captured(1), -1);
     } else if (text.contains("Creating geometry")) {
