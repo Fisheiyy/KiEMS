@@ -53,6 +53,14 @@ The numerics are in `libkiems/kiems/trace_profile.hpp`, checked against exact ca
 
 ## Limits
 
+- **How far the profile reaches.** The impedance at a point is known once a step has got there and
+  come back, so the profile ends at about the velocity × the run's length ÷ 2. Past that the trace is
+  grey, and the page says how far it reached. Raising Max steps extends it.
+- **A run must outlast its excitation.** The run is driven by a Gaussian pulse 2 × 9/(2π fc) long,
+  where fc is half the sweep's width; that's 16 ns for a sweep to 350 MHz. A run that stops sooner
+  measured mostly noise. The page then says only that, and the CLI warns.
+- **The sweep sets the resolution.** The sharpest step it can carry rises in about 1.24/f_stop, and
+  that edge blurs the profile over about half the rise time × the velocity. A few GHz suits a trace.
 - **Probes with no plane under them** are left out, and the page says how many. This happens where
   a trace returns through copper beside it rather than below it, such as a bottom-layer trace on a
   two-layer board whose top layer is bare there. Such a probe settles somewhere other than the

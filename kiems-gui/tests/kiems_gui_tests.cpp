@@ -1274,7 +1274,8 @@ private slots:
         write("trace_ut_9", waveform(0, 0, 8, 0));
         write("trace_probes.txt", probes);
 
-        const auto a = kiems_gui::analyseTrace(*board, dir.path(), 0, 6e9, 0);
+        // A sweep whose pulse (fc = 3 GHz) is the one these waveforms carry: 0.95 ns, inside the 4 ns run.
+        const auto a = kiems_gui::analyseTrace(*board, dir.path(), 0, 6e9, 0, 6e9 - 2 * 3e9 + 1e-3);
         QVERIFY2(a->ok(), qPrintable(a->error));
         QCOMPARE(a->driver.name, QString("U1 pin 1 (SIG)"));
         QCOMPARE(a->targetImpedance, 45.0);
@@ -1299,12 +1300,20 @@ private slots:
         view.resize(1200, 800);
         QSignalSpy analysed(&view, &kiems_gui::TraceView::analysed);
         view.setBoard(boardData);
-        view.showSimulation("Line", dir.path(), 6e9);
+        view.showSimulation("Line", dir.path(), 6e9, 6e9 - 2 * 3e9 + 1e-3);
         QVERIFY(analysed.wait(30000));
         QVERIFY(analysed.first().at(0).toBool());
         auto* findings = view.findChild<QTreeWidget*>("findings");
-        QVERIFY(findings->topLevelItemCount() >= 1);
-        QVERIFY2(findings->topLevelItem(0)->text(0).startsWith("Within 10 %"), qPrintable(findings->topLevelItem(0)->text(0)));
+        bool matched = false, blurred = false;
+        for (int i = 0; i < findings->topLevelItemCount(); ++i) {
+            matched = matched || findings->topLevelItem(i)->text(0).startsWith("Within 10 %");
+            blurred = blurred || findings->topLevelItem(i)->text(0).contains("blurs the impedance");
+        }
+        QVERIFY(matched);
+        QVERIFY(blurred); // a 0.2 ns edge spans more than this 10 mm line, there and back
+        // Nothing about the run being short: it outlasts its pulse, and the profile reaches the end.
+        QVERIFY(a->recordSeconds > a->pulseSeconds);
+        QVERIFY(a->profileReachMm >= a->netLength);
         if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
             view.setAttribute(Qt::WA_DontShowOnScreen);
             view.show();

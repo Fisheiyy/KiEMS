@@ -5,6 +5,8 @@
 //  CLI entry point. Ported from kiems/main.py.
 
 #include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -857,6 +859,25 @@ std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std:
                                     (probeDir / probeResult.name).string());
         }
         probeFile << probeResult.data();
+    }
+    // A run shorter than its excitation never drove the board properly: Copper cuts the Gaussian
+    // pulse (2 x 9 / (2 pi fc) long) to max_steps without a word.
+    const auto timestep = [&]() -> double {
+        for (const copper::CopperProbeResult& probe : gpuResult.probes) {
+            if (probe.samples.size() >= 2) return probe.samples[1].timeSeconds - probe.samples[0].timeSeconds;
+        }
+        return 0;
+    }();
+    if (const double pulse = portConfig.fc > 0 ? 2 * 9 / (2 * std::numbers::pi * portConfig.fc) : 0;
+        timestep > 0 && static_cast<double>(gpuResult.timestepsRun) * timestep < pulse) {
+        std::ostringstream message;
+        message << "Simulation \"" << pathToUtf8(probeDir.parent_path().filename()) << "\", port " << excitedPortNumber
+                << ": the run stopped at " << gpuResult.timestepsRun * timestep * 1e9
+                << " ns, before its excitation pulse had played (" << pulse * 1e9
+                << " ns for this sweep), so its results are mostly noise -- raise max_steps to about "
+                << static_cast<long long>(std::ceil(2 * pulse / timestep / 10000) * 10000)
+                << ", or the sweep's top frequency";
+        logWarning(message.str());
     }
     if (!gpuResult.endCriteriaReached) {
         // Spectra of a response cut off before it decays ripple, and can even show |S| > 1.

@@ -1078,9 +1078,10 @@ void MainWindow::selectionChanged() {
         _pages->setCurrentWidget(_geometryView);
         _inspector->hide();
     } else if (page == static_cast<int>(Page::Trace)) {
+        const nlohmann::json start = _document.documentValue("/frequency/start");
         const nlohmann::json stop = _document.documentValue("/frequency/stop");
         _traceView->showSimulation(_document.simulationName(simulation), _document.simulationDir(simulation),
-                                   stop.is_number() ? stop.get<double>() : 1e9);
+                                   stop.is_number() ? stop.get<double>() : 1e9, start.is_number() ? start.get<double>() : 0);
         _pages->setCurrentWidget(_traceView);
         _inspector->hide();
     } else if (page == static_cast<int>(Page::Fields)) {

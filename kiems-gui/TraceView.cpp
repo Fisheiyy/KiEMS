@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLocale>
 #include <QLegend>
 #include <QLegendMarker>
 #include <QLineSeries>
@@ -634,11 +635,12 @@ void TraceView::setBoard(std::shared_ptr<const BoardData> board) {
     if (!_simulationDirectory.isEmpty() && (!_analysis || !_analysis->ok())) analyse();
 }
 
-void TraceView::showSimulation(const QString& title, const QString& simulationDirectory, double fMax) {
+void TraceView::showSimulation(const QString& title, const QString& simulationDirectory, double fMax, double fMin) {
     const bool same = simulationDirectory == _simulationDirectory;
     _title = title;
     _simulationDirectory = simulationDirectory;
     _fMax = fMax;
+    _fMin = fMin;
     _heading->setText(title);
     const int previous = _driver->currentData().toInt();
     _driver->clear();
@@ -680,7 +682,9 @@ void TraceView::analyse() {
         emit analysed(_analysis->ok());
     });
     watcher->setFuture(QtConcurrent::run([board = _board, directory = _simulationDirectory, port = _driver->currentData().toInt(),
-                                          fMax = _fMax, rise] { return analyseTrace(*board, directory, port, fMax, rise); }));
+                                          fMax = _fMax, fMin = _fMin, rise] {
+        return analyseTrace(*board, directory, port, fMax, rise, fMin);
+    }));
 }
 
 void TraceView::showAnalysis() {
@@ -704,6 +708,9 @@ void TraceView::showAnalysis() {
     if (a.unreferencedProbes > 0) {
         status += tr("; %n probe(s) left out, with no plane under them", nullptr, a.unreferencedProbes);
     }
+    if (a.profileReachMm < a.netLength) {
+        status += tr("; the impedance reaches %1 mm of it").arg(a.profileReachMm, 0, 'f', 1);
+    }
     _status->setText(status);
     _status->setToolTip(status);
     _runButton->setVisible(!haveProbes);
@@ -719,6 +726,50 @@ void TraceView::showAnalysis() {
         if (color.isValid()) item->setForeground(0, color);
         return item;
     };
+    // First what limits the run itself: everything below rests on it.
+    const QColor warning(240, 110, 90), caution(250, 200, 90);
+    const bool cutShort = a.pulseSeconds > 0 && a.recordSeconds < a.pulseSeconds;
+    if (cutShort) {
+        // Enough steps for the pulse, and as long again for it to travel and ring down.
+        const double needed = a.timestepSeconds > 0 ? std::ceil(2 * a.pulseSeconds / a.timestepSeconds / 10000) * 10000 : 0;
+        auto* item = add(tr("This run stopped at %1 ns, before its excitation had played: the pulse for a sweep to %2 MHz "
+                            "lasts %3 ns, so these results are mostly noise. Raise Max steps to about %4, or the "
+                            "sweep's top frequency (a few GHz suits a trace's profile).")
+                             .arg(a.recordSeconds * 1e9, 0, 'g', 3)
+                             .arg(a.fMax / 1e6, 0, 'g', 4)
+                             .arg(a.pulseSeconds * 1e9, 0, 'g', 3)
+                             .arg(QLocale().toString(needed, 'f', 0)),
+                         QString(), kNaN, -1, warning);
+        item->setToolTip(0, item->text(0));
+    }
+    if (!cutShort && a.profileReachMm < a.netLength) {
+        auto* item = add(tr("The impedance is known only to %1 mm of %2: in the run's %3 ns a step gets no farther and back. "
+                            "Raise Max steps to see the rest.")
+                             .arg(a.profileReachMm, 0, 'f', 1)
+                             .arg(a.netLength, 0, 'f', 1)
+                             .arg(a.recordSeconds * 1e9, 0, 'g', 3),
+                         tr("%1 mm on").arg(a.profileReachMm, 0, 'f', 1), a.profileReachMm, -1, caution);
+        item->setToolTip(0, item->text(0));
+    }
+    // The step's edge, there and back, smears the profile over about this much trace.
+    if (a.velocity > 0) {
+        const double blur = 0.5 * a.riseTime * a.velocity;
+        if (blur > 0.25 * a.netLength) {
+            auto* item = add(tr("The sharpest step a sweep to %1 MHz can carry rises in %2 ns, which blurs the impedance "
+                                "over about %3 mm of trace: raise the sweep's top frequency for a finer profile.")
+                                 .arg(a.fMax / 1e6, 0, 'g', 4)
+                                 .arg(a.riseTime * 1e9, 0, 'g', 2)
+                                 .arg(blur, 0, 'f', 0),
+                             QString(), kNaN, -1, caution);
+            item->setToolTip(0, item->text(0));
+        }
+    }
+    // A run that stopped before its pulse had played measured noise: say only that.
+    if (cutShort) {
+        _findings->resizeColumnToContents(1);
+        updateCharts();
+        return;
+    }
     const double target = a.targetImpedance;
     bool anyMismatch = false;
     for (std::size_t i = 0; i < a.tdrDistance.size();) {
@@ -741,7 +792,7 @@ void TraceView::showAnalysis() {
         anyMismatch = true;
         i = j;
     }
-    if (!anyMismatch && !a.tdrDistance.empty()) {
+    if (!anyMismatch && !a.tdrDistance.empty() && a.profileReachMm >= a.netLength) {
         add(tr("Within %1 % of %2 Ω all along").arg(100 * kBand, 0, 'f', 0).arg(target, 0, 'f', 0), QString(), kNaN, -1, QColor());
     }
     std::vector<int> ringing = drivenProbes(a);

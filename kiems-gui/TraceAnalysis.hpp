@@ -74,6 +74,14 @@ struct TraceAnalysis {
     /// Where the plots look by default: from just before the step to a few times its last arrival.
     double windowEnd = 0;
     double velocity = 0;        // mm/s: the mean along the trace
+    double recordSeconds = 0;   // how long the run ran
+    double timestepSeconds = 0;
+    /// How long the excitation's Gaussian pulse lasts (Copper's 2 x 9 / (2 pi fc)): a run shorter
+    /// than this stopped before its excitation had played, and its results are mostly noise.
+    double pulseSeconds = 0;
+    /// How far along the driven net the impedance profile reaches: a step has to get there and back
+    /// within the run.
+    double profileReachMm = 0;
     std::vector<double> driverStep; // the driver port's own voltage, for a unit incident step
     /// Every other port on the driven net: its voltage for a unit incident step at the driver.
     std::vector<std::pair<QString, std::vector<double>>> portSteps;
@@ -83,9 +91,9 @@ struct TraceAnalysis {
     double impedanceAt(double distanceMm) const;
 };
 
-/// Analyses the run of `excitedPort` in `simulationDirectory` on `board`. `fMax` is the top of the
+/// Analyses the run of `excitedPort` in `simulationDirectory` on `board`. `fMin` and `fMax` are the
 /// simulation's sweep; `riseTime` the step's, raised to what `fMax` can resolve.
 std::shared_ptr<const TraceAnalysis> analyseTrace(const BoardData& board, const QString& simulationDirectory,
-                                                  int excitedPort, double fMax, double riseTime);
+                                                  int excitedPort, double fMax, double riseTime, double fMin = 0);
 
 } // namespace kiems_gui
