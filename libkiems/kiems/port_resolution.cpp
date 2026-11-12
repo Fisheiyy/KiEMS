@@ -1266,6 +1266,8 @@ std::expected<void, std::string> resolveSimulationPorts(EMSConfig& config, const
     std::optional<_NetConnectivity> netConnectivity;
     // Likewise loaded once, the first time a simulation has a pin port to check for a via-in-pad.
     std::optional<_ReturnBridgeBoard> returnBridgeBoard;
+    // And every track on the board, for the trace probes.
+    std::optional<std::vector<std::pair<std::string, libkicad::TrackSegment>>> allTracks;
 
     for (SimulationConfig& sim : config.simulations()) {
         // A Simulation Set template is never run itself -- only the simulations generated from it.
@@ -1683,6 +1685,62 @@ std::expected<void, std::string> resolveSimulationPorts(EMSConfig& config, const
                     // resolves an ExcitationConfig/PortRef/DifferentialPairConfig to it (see
                     // PortConfig::isTraceProbe()'s own doc comment).
                     sim.ports().push_back(std::move(probe));
+                }
+            }
+        }
+
+        // Voltage probes along every simulated net's tracks, for the Trace view: evenly spaced, at
+        // most kTraceProbeLimit of them over the simulation, and none closer than 0.3 mm.
+        sim.traceProbes().clear();
+        {
+            if (!allTracks) {
+                auto tracks = board.allTracks();
+                if (!tracks) return std::unexpected(std::move(tracks).error());
+                allTracks = std::move(*tracks);
+            }
+            struct Candidate {
+                const std::string* net;
+                const libkicad::TrackSegment* track;
+                std::int32_t layer;
+                std::int32_t plane;
+                double length;
+            };
+            std::vector<Candidate> candidates;
+            double totalLength = 0;
+            for (const std::string& netName : orderedNets) {
+                const InvolvedNetConfig& entry = *netOwner.at(netName);
+                if (entry.kind() == NetSelectorKind::FootprintPin) continue;
+                for (const auto& [trackNet, track] : *allTracks) {
+                    if (trackNet != netName) continue;
+                    const std::optional<std::int32_t> layer =
+                        config.metalLayerIndexForFileName(_normalizeLayerName(track.copperLayerName));
+                    if (!layer) continue;
+                    const std::int32_t plane = _planeForPortLayer(config, *layer, entry.plane());
+                    if (plane == *layer) continue;
+                    const double length = std::hypot(track.endXMm - track.startXMm, track.endYMm - track.startYMm);
+                    if (!(length > 0)) continue;
+                    candidates.push_back({&netName, &track, *layer, plane, length});
+                    totalLength += length;
+                }
+            }
+            constexpr std::size_t kTraceProbeLimit = 400;
+            const double spacing = std::max(0.3, totalLength / static_cast<double>(kTraceProbeLimit));
+            for (const Candidate& c : candidates) {
+                // Evenly along the segment, centred, so short segments still get their midpoint.
+                const auto count = static_cast<std::size_t>(std::max(1.0, std::round(c.length / spacing)));
+                for (std::size_t k = 0; k < count; ++k) {
+                    const double t = (static_cast<double>(k) + 0.5) / static_cast<double>(count);
+                    TraceProbePoint point;
+                    point.net = _unescapeForDisplay(*c.net);
+                    point.xMm = c.track->startXMm + t * (c.track->endXMm - c.track->startXMm);
+                    point.yMm = c.track->startYMm + t * (c.track->endYMm - c.track->startYMm);
+                    point.simX = _mmToSimUnits(point.xMm) - edgeCutsOrigin.x();
+                    point.simY = _mmToSimUnits(point.yMm) - edgeCutsOrigin.y();
+                    point.layer = c.layer;
+                    point.plane = c.plane;
+                    point.widthMm = c.track->widthMm;
+                    point.trackUuid = c.track->uuid;
+                    sim.traceProbes().push_back(std::move(point));
                 }
             }
         }

@@ -210,6 +210,20 @@ enum class LumpedComponentTopology { Series, Parallel };
 /// the user included it (SimulationConfig::includedComponents()) and at least one pad centre
 /// survives inside the subsequently computed board cutout -- see port_resolution.cpp's
 /// _resolveLumpedComponents() and restrictLumpedComponentsToCutout()'s spatial filter.
+/// A point on a simulated net's routed track where the FDTD run records the voltage between the
+/// track and its reference plane, about ten samples per period of the top of the sweep -- the rows
+/// of probes the Trace view reads ringing along a trace from (trace_ut_<n> in each run's directory,
+/// listed in its trace_probes.txt). Resolved with the ports; never (de)serialized.
+struct TraceProbePoint {
+    std::string net;                 // as displayed
+    double xMm = 0, yMm = 0;         // on the board, libkicad's frame (as TrackSegment)
+    double simX = 0, simY = 0;       // the same point in the simulation frame, in simulation units
+    std::int32_t layer = 0;          // its track's metal layer
+    std::int32_t plane = 0;          // the reference plane's metal layer
+    double widthMm = 0;              // its track's width
+    std::string trackUuid;
+};
+
 class LumpedComponentConfig {
 public:
     const std::string& reference() const { return _reference; }
@@ -1429,6 +1443,11 @@ public:
     std::vector<LumpedComponentConfig>& lumpedComponents() { return _lumpedComponents; }
     const std::vector<LumpedComponentConfig>& lumpedComponents() const { return _lumpedComponents; }
 
+    /// Voltage probes along the simulated nets' tracks -- see TraceProbePoint. Populated by
+    /// resolveSimulationPorts(); never (de)serialized.
+    std::vector<TraceProbePoint>& traceProbes() { return _traceProbes; }
+    const std::vector<TraceProbePoint>& traceProbes() const { return _traceProbes; }
+
     /// Every net name resolved from involvedNets() (populated once by resolveSimulationPorts(),
     /// alongside ports()) -- cached here so grid_gen.cpp's mesh-density placement doesn't need to
     /// re-resolve net_class/footprint+pin entries via another ki round trip. The mesh's
@@ -1482,6 +1501,7 @@ private:
     std::vector<PortConfig> _ports;         // not (de)serialized, populated by resolveSimulationPorts()
     std::vector<std::string> _resolvedNets; // not (de)serialized, populated by resolveSimulationPorts()
     std::vector<LumpedComponentConfig> _lumpedComponents; // not (de)serialized, populated by resolveSimulationPorts()
+    std::vector<TraceProbePoint> _traceProbes;             // likewise
 };
 
 void to_json(nlohmann::json& j, const SimulationConfig& p);

@@ -133,6 +133,7 @@ add_kiems_tool(kiems_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/kiems_fdtd_worker/
 add_kiems_tool(copper_fdtd_worker "${CMAKE_CURRENT_SOURCE_DIR}/copper_fdtd_worker/main.cpp")
 # The DC power analysis solver's analytic checks: plain C++, so they run on every platform.
 add_kiems_tool(dc_analysis_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/libkiems/dc_analysis_tests.cpp")
+add_kiems_tool(trace_profile_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/libkiems/trace_profile_tests.cpp")
 target_include_directories(dc_analysis_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/submodules/Copper/CopperUtils")
 
 if(KIEMS_BUILD_GUI)
@@ -143,6 +144,7 @@ endif()
 if(KIEMS_BUILD_TESTS)
     enable_testing()
     add_test(NAME dc_analysis_tests COMMAND dc_analysis_tests)
+    add_test(NAME trace_profile_tests COMMAND trace_profile_tests)
     if(APPLE)
         enable_language(OBJCXX)
         enable_testing()

@@ -386,6 +386,9 @@ public:
 
     void setupPorts(std::int32_t enabledIdx);
     std::expected<void, std::string> addPorts();
+    /// Voltage probes, trace_ut_<n>, at SimulationConfig::traceProbes(): trace to reference plane,
+    /// sampled about ten times per period of the top of the sweep.
+    std::expected<void, std::string> addTraceProbes();
 
     const std::vector<std::unique_ptr<Port>>& ports() const { return _ports; }
 

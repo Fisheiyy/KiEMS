@@ -440,6 +440,9 @@ std::expected<void, std::string> Simulation::populateGeometry() {
     if (auto result = addPorts(); !result) {
         return std::unexpected(result.error());
     }
+    if (auto result = addTraceProbes(); !result) {
+        return std::unexpected(result.error());
+    }
     if (auto result = addLumpedComponents(); !result) {
         return std::unexpected(result.error());
     }
@@ -1983,6 +1986,15 @@ void Simulation::writeRunDiagnostics(const std::filesystem::path& directory) con
         }
     }
 
+    std::ofstream traces(directory / "trace_probes.txt");
+    traces << "# Voltage probes along the simulated nets' tracks, trace_ut_<index>: index, net, position on "
+              "the board (mm, KiCad's frame), track layer -> plane, track width (mm), track uuid\n";
+    for (std::size_t index = 0; index < _simConfig.traceProbes().size(); ++index) {
+        const TraceProbePoint& point = _simConfig.traceProbes()[index];
+        traces << index << "\t" << point.net << "\t" << point.xMm << "\t" << point.yMm << "\t" << point.layer << "->"
+               << point.plane << "\t" << point.widthMm << "\t" << point.trackUuid << "\n";
+    }
+
     std::ofstream lumped(directory / "lumped.txt");
     lumped << "# Resolved lumped components (config): name, nets, topology, R (ohm), L (H), C (F), pad positions (mm)\n";
     for (const LumpedComponentConfig& component : _simConfig.lumpedComponents()) {
@@ -2285,6 +2297,32 @@ std::expected<void, std::string> Simulation::addPassiveProbe(PortConfig& portCon
 
     logDebug("Adding passive probe at start: " + _point3ToString(start) + " end: " + _point3ToString(stop));
     _ports.push_back(std::make_unique<PassiveProbe>(*_csx, portNumber, start, stop, "z", 100));
+    return {};
+}
+
+std::expected<void, std::string> Simulation::addTraceProbes() {
+    const auto& points = _simConfig.traceProbes();
+    if (points.empty()) return {};
+    // About ten samples per period of the sweep's top: the waveforms carry nothing faster.
+    const double stop = _config.frequency().stop();
+    std::ostringstream periodText; // not std::to_string, whose six decimals make 10 ps "0.000000"
+    periodText.precision(17);
+    periodText << (stop > 0 ? 1.0 / (10.0 * stop) : 0.0);
+    const std::string period = periodText.str();
+    for (std::size_t index = 0; index < points.size(); ++index) {
+        const TraceProbePoint& point = points[index];
+        const auto trackZ = getMetalLayerOffset(point.layer);
+        const auto planeZ = getMetalLayerOffset(point.plane);
+        if (!trackZ || !planeZ) continue;
+        // Like a lumped port's voltage probe: from the track down to its plane, weighted -1.
+        const Point3 start = {std::round(point.simX), std::round(point.simY), std::round(*trackZ)};
+        const Point3 stop3 = {start[0], start[1], std::round(*planeZ)};
+        if (start[2] == stop3[2]) continue;
+        CSPropProbeBox* probe = addProbe(*_csx, "trace_ut_" + std::to_string(index), 0, -1);
+        probe->AddAttribute("copper_sample_period", period);
+        addBox(*probe, start, stop3);
+    }
+    logInfo("Added " + std::to_string(points.size()) + " voltage probes along the simulated nets' tracks");
     return {};
 }
 
