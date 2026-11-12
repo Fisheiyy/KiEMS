@@ -26,6 +26,8 @@ struct BoardData {
     libkicad::BoardGeometry geometry;
     std::vector<libkicad::FootprintInfo> footprints;
     std::vector<libkicad::PadPosition> pads;
+    /// Every routed track segment, with its net (as KiCad names it); arcs come as short segments.
+    std::vector<std::pair<std::string, libkicad::TrackSegment>> tracks;
     QStringList nets;
     std::map<std::string, std::string> netClasses;  // net -> its highest-priority class
 

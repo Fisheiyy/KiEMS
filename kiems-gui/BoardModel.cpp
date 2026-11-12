@@ -64,6 +64,7 @@ LoadResult loadBoard(const QString& boardPath) {
     }
     // For the Geometry page's vias; a board without them still loads.
     if (auto holes = board.throughHoles()) data->throughHoles = std::move(*holes);
+    if (auto tracks = board.allTracks()) data->tracks = std::move(*tracks);
     auto geometry = board.boardGeometry();
     if (!geometry) return fail("Couldn't read the board's geometry", geometry.error());
     data->geometry = std::move(*geometry);

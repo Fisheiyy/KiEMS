@@ -10,6 +10,7 @@
 #include "ResultsView.hpp"
 #include "SimulationEditor.hpp"
 #include "SimulationSet.hpp"
+#include "TraceView.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -167,6 +168,8 @@ MainWindow::MainWindow() {
     _pages->addWidget(_powerView);
     _pages->addWidget(_resultsView);
     _pages->addWidget(_fieldViewer);
+    _traceView = new TraceView;
+    _pages->addWidget(_traceView);
 
     _inspector = new Inspector(&_document);
     _inspector->setMinimumWidth(300);
@@ -267,6 +270,7 @@ MainWindow::MainWindow() {
     connect(_removeButton, &QPushButton::clicked, this, &MainWindow::removeSimulation);
     connect(_stopButton, &QPushButton::clicked, this, &MainWindow::stopRun);
     connect(_fieldViewer, &FieldViewer::captureRequested, this, [this] { runSimulation(true); });
+    connect(_traceView, &TraceView::runRequested, this, [this] { runSimulation(false); });
     connect(_geometryView, &GeometryView::buildRequested, this, &MainWindow::buildGeometry);
     connect(_powerView, &PowerView::runFinished, this, [this](const QString& name, bool ok) {
         _statusLabel->setText(ok ? tr("%1's power analysis finished.").arg(name) : tr("%1's power analysis failed.").arg(name));
@@ -289,6 +293,7 @@ MainWindow::MainWindow() {
         _fieldViewer->setBoard(_boardModel.data());
         _inspector->setBoard(_boardModel.data());
         _powerView->setBoard(_boardModel.data());
+        _traceView->setBoard(_boardModel.data());
         populateLayerList();
         updateHighlights();
         if (_pages->currentWidget() == _geometryView) refreshGeometryPage();
@@ -1027,11 +1032,17 @@ QTreeWidgetItem* MainWindow::addSimulationItem(QTreeWidgetItem* parent, int i, i
     fields->setData(0, kPageRole, static_cast<int>(Page::Fields));
     const bool haveFields = !FieldViewer::findSeries(_document.simulationDir(i)).empty();
     fields->setIcon(0, statusDot(haveFields, runningStoresFields ? QColor(0xf2, 0xd0, 0x4b) : accent));
+    auto* trace = new QTreeWidgetItem(top, {tr("Trace")});
+    trace->setData(0, kSimulationRole, i);
+    trace->setData(0, kPageRole, static_cast<int>(Page::Trace));
+    trace->setToolTip(0, tr("The impedance and ringing along the simulated traces."));
+    trace->setIcon(0, statusDot(_document.hasResults(i), running ? QColor(0xf2, 0xd0, 0x4b) : accent));
     // A set's simulations start folded, as there can be many.
     top->setExpanded(_expanded.value(expansionKey(top), parent == nullptr));
     if (i == selectedSimulation) {
         _sidebar->setCurrentItem(selectedPage == static_cast<int>(Page::Results)    ? results
                                  : selectedPage == static_cast<int>(Page::Fields)   ? fields
+                                 : selectedPage == static_cast<int>(Page::Trace)    ? trace
                                  : selectedPage == static_cast<int>(Page::Geometry) ? geometry
                                  : selectedPage == static_cast<int>(Page::Board)    ? board
                                                                                     : top);
@@ -1065,6 +1076,12 @@ void MainWindow::selectionChanged() {
     } else if (page == static_cast<int>(Page::Geometry)) {
         refreshGeometryPage();
         _pages->setCurrentWidget(_geometryView);
+        _inspector->hide();
+    } else if (page == static_cast<int>(Page::Trace)) {
+        const nlohmann::json stop = _document.documentValue("/frequency/stop");
+        _traceView->showSimulation(_document.simulationName(simulation), _document.simulationDir(simulation),
+                                   stop.is_number() ? stop.get<double>() : 1e9);
+        _pages->setCurrentWidget(_traceView);
         _inspector->hide();
     } else if (page == static_cast<int>(Page::Fields)) {
         const SimulationResults results =

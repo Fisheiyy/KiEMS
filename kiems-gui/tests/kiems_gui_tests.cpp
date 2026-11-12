@@ -11,6 +11,7 @@
 #include "PowerAnalysis.hpp"
 #include "PowerView.hpp"
 #include "RunEstimate.hpp"
+#include "TraceView.hpp"
 #include "QuantityEdit.hpp"
 #include "Report.hpp"
 #include "ResultsView.hpp"
@@ -1222,6 +1223,93 @@ private slots:
         QCOMPARE(kiems_gui::formatDuration(42.4), QString("42 s"));
         QCOMPARE(kiems_gui::formatDuration(187), QString("3:07"));
         QCOMPARE(kiems_gui::formatDuration(3727), QString("1:02:07"));
+    }
+
+    void traceAnalysis() {
+        // A straight 10 mm, 45 ohm trace from U1 pin 1 to J1 pin 1, driven at U1 and matched at J1:
+        // a run's files written from ideal waveforms -- the incident pulse at the driver, delayed
+        // copies along the trace at 150 mm/ns, and one probe over no plane that reads nothing.
+        auto board = std::make_shared<kiems_gui::BoardData>();
+        board->copperLayers = {"F.Cu", "B.Cu"};
+        board->pads = {{"U1", "1", "SIG", "output", 0, 0, 0, "F.Cu", 0.3, 0.3},
+                       {"J1", "1", "SIG", "input", 10, 0, 0, "F.Cu", 0.3, 0.3}};
+        libkicad::TrackSegment segment;
+        segment.endXMm = 10;
+        segment.widthMm = 0.2;
+        segment.copperLayerName = "F.Cu";
+        segment.uuid = "track";
+        board->tracks = {{"SIG", segment}};
+
+        QTemporaryDir dir;
+        QVERIFY(QDir(dir.path()).mkpath("0"));
+        const QDir run(dir.filePath("0"));
+        const auto write = [&](const QString& name, const QString& text) {
+            QFile file(run.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+            file.write(text.toUtf8());
+        };
+        write("ports.txt", "# ports\n0\tU1 pin 1 (SIG)\tnet=SIG\texcited\tZ=45\tCload=0\tat=(0, 0)\tlayer=0->1\n"
+                           "1\tJ1 pin 1 (SIG)\tnet=SIG\tabsorbing\tZ=45\tCload=0\tat=(10, 0)\tlayer=0->1\n");
+        const double fc = 3e9, t0 = 9 / (2 * std::numbers::pi * fc), velocity = 150e9; // mm/s
+        const auto pulse = [&](double t) {
+            return std::cos(2 * std::numbers::pi * 3e9 * (t - t0)) * std::exp(-std::pow(2 * std::numbers::pi * fc * t / 3 - 3, 2));
+        };
+        const auto waveform = [&](double delay, double scale, int every, double offset) {
+            QString text = "% probe\n";
+            for (int n = 0; n < 4000; n += every) {
+                const double t = (n + offset) * 1e-12;
+                text += QString("%1\t%2\n").arg(t, 0, 'g', 12).arg(scale * pulse(t - delay), 0, 'g', 12);
+            }
+            return text;
+        };
+        write("port_ut_0", waveform(0, 1, 1, 0));
+        write("port_it_0", waveform(0, 1.0 / 45, 1, 0.5)); // matched: nothing comes back
+        write("port_ut_1", waveform(10 / velocity, 1, 1, 0));
+        QString probes = "# probes\n";
+        for (int k = 0; k < 9; ++k) {
+            probes += QString("%1\tSIG\t%2\t0\t0->1\t0.2\ttrack\n").arg(k).arg(k + 1);
+            write(QString("trace_ut_%1").arg(k), waveform((k + 1) / velocity, 1, 8, 0));
+        }
+        probes += "9\tSIG\t5.5\t0\t0->1\t0.2\ttrack\n";
+        write("trace_ut_9", waveform(0, 0, 8, 0));
+        write("trace_probes.txt", probes);
+
+        const auto a = kiems_gui::analyseTrace(*board, dir.path(), 0, 6e9, 0);
+        QVERIFY2(a->ok(), qPrintable(a->error));
+        QCOMPARE(a->driver.name, QString("U1 pin 1 (SIG)"));
+        QCOMPARE(a->targetImpedance, 45.0);
+        QVERIFY(std::abs(a->netLength - 10) < 1e-9);
+        QVERIFY(a->delayMeasured);
+        QVERIFY2(std::abs(a->velocity / velocity - 1) < 0.03, qPrintable(QString::number(a->velocity)));
+        for (double d : {2.0, 5.0, 8.0}) QVERIFY2(std::abs(a->impedanceAt(d) - 45) < 1, qPrintable(QString::number(a->impedanceAt(d))));
+        QCOMPARE(a->unreferencedProbes, 1); // the one reading nothing
+        for (const auto& probe : a->probes) {
+            if (!probe.referenced) continue;
+            QVERIFY(std::abs(probe.ringing.finalValue - 1) < 0.02);
+            QVERIFY(probe.ringing.deviation < 0.02);
+            // Each arrives when the trace's delay says it should.
+            QVERIFY2(std::abs(probe.ringing.arrival - probe.distanceMm / velocity) < 5e-12,
+                     qPrintable(QString::number(probe.ringing.arrival)));
+        }
+        QCOMPARE(a->portSteps.size(), std::size_t(1));
+
+        // The page shows it, and finds nothing wrong with it.
+        auto boardData = std::shared_ptr<const kiems_gui::BoardData>(board);
+        kiems_gui::TraceView view;
+        view.resize(1200, 800);
+        QSignalSpy analysed(&view, &kiems_gui::TraceView::analysed);
+        view.setBoard(boardData);
+        view.showSimulation("Line", dir.path(), 6e9);
+        QVERIFY(analysed.wait(30000));
+        QVERIFY(analysed.first().at(0).toBool());
+        auto* findings = view.findChild<QTreeWidget*>("findings");
+        QVERIFY(findings->topLevelItemCount() >= 1);
+        QVERIFY2(findings->topLevelItem(0)->text(0).startsWith("Within 10 %"), qPrintable(findings->topLevelItem(0)->text(0)));
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            view.setAttribute(Qt::WA_DontShowOnScreen);
+            view.show();
+            view.grab().save(QDir(snapshots).filePath("trace.png"));
+        }
     }
 
     void jobQueue() {

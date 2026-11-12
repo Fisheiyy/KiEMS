@@ -32,6 +32,7 @@ class BoardView;
 class FieldViewer;
 class GeometryView;
 class PowerView;
+class TraceView;
 class Inspector;
 class ResultsView;
 
@@ -46,7 +47,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
-    enum class Page { Board, Geometry, Results, Fields, Power };
+    enum class Page { Board, Geometry, Results, Fields, Power, Trace };
 
     void createActions();
     void newDocument();
@@ -131,6 +132,7 @@ private:
     FieldViewer* _fieldViewer;
     GeometryView* _geometryView;
     PowerView* _powerView;
+    TraceView* _traceView;
     Inspector* _inspector;
     QDockWidget* _logDock;
     QDockWidget* _jobsDock;

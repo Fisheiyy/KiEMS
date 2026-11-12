@@ -60,7 +60,11 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     SimulationSetPanel.cpp
     SimulationSetPanel.hpp
     TestsPanel.cpp
-    TestsPanel.hpp)
+    TestsPanel.hpp
+    TraceAnalysis.cpp
+    TraceAnalysis.hpp
+    TraceView.cpp
+    TraceView.hpp)
 
 set_target_properties(kiems-gui PROPERTIES
     CXX_STANDARD 23
@@ -136,7 +140,11 @@ if(TARGET Qt6::Test)
         SimulationSetPanel.cpp
         SimulationSetPanel.hpp
         TestsPanel.cpp
-        TestsPanel.hpp)
+        TestsPanel.hpp
+        TraceAnalysis.cpp
+        TraceAnalysis.hpp
+        TraceView.cpp
+        TraceView.hpp)
     set_target_properties(kiems-gui-tests PROPERTIES
         EXCLUDE_FROM_ALL TRUE
         CXX_STANDARD 23
