@@ -49,6 +49,7 @@ private:
     QGroupBox* _documentGroup;
     QuantityEdit* _frequencyStart;
     QuantityEdit* _frequencyStop;
+    QCheckBox* _shortPulse;
     QuantityEdit* _maxSteps;
     QuantityEdit* _gridDensity;
     QuantityEdit* _absorbingBoundary;

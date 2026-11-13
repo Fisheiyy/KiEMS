@@ -105,7 +105,7 @@ double TraceAnalysis::impedanceAt(double distanceMm) const {
 }
 
 std::shared_ptr<const TraceAnalysis> analyseTrace(const BoardData& board, const QString& simulationDirectory,
-                                                  int excitedPort, double fMax, double riseTime, double fMin) {
+                                                  int excitedPort, double fMax, double riseTime, double pulseSeconds) {
     auto analysis = std::make_shared<TraceAnalysis>();
     const QString run = runDirectory(simulationDirectory, excitedPort);
     const std::vector<TracePort> ports = tracePorts(simulationDirectory);
@@ -139,7 +139,7 @@ std::shared_ptr<const TraceAnalysis> analyseTrace(const BoardData& board, const 
     const double duration = u.time.back();
     analysis->recordSeconds = duration;
     analysis->timestepSeconds = u.time.size() > 1 ? u.time[1] - u.time[0] : 0;
-    if (const double fc = (fMax - fMin) / 2; fc > 0) analysis->pulseSeconds = 2 * 9 / (2 * std::numbers::pi * fc);
+    analysis->pulseSeconds = pulseSeconds;
     const std::vector<double> grid = kiems::trace::frequencyGrid(duration, fMax);
     // From a little before the step (its edge is centred on t = 0) to the end of the run.
     const double step = std::min(analysis->riseTime / 6, 1 / (10 * fMax));

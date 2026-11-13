@@ -91,9 +91,10 @@ struct TraceAnalysis {
     double impedanceAt(double distanceMm) const;
 };
 
-/// Analyses the run of `excitedPort` in `simulationDirectory` on `board`. `fMin` and `fMax` are the
-/// simulation's sweep; `riseTime` the step's, raised to what `fMax` can resolve.
+/// Analyses the run of `excitedPort` in `simulationDirectory` on `board`. `fMax` is the top of the
+/// simulation's sweep; `riseTime` the step's, raised to what `fMax` can resolve; `pulseSeconds` how
+/// long its excitation pulse plays (kiems::Frequency::pulseLength()), 0 when unknown.
 std::shared_ptr<const TraceAnalysis> analyseTrace(const BoardData& board, const QString& simulationDirectory,
-                                                  int excitedPort, double fMax, double riseTime, double fMin = 0);
+                                                  int excitedPort, double fMax, double riseTime, double pulseSeconds = 0);
 
 } // namespace kiems_gui

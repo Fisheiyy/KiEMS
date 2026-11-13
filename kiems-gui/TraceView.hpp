@@ -126,8 +126,9 @@ public:
     explicit TraceView(QWidget* parent = nullptr);
 
     void setBoard(std::shared_ptr<const BoardData> board);
-    /// Shows `title`'s runs in `simulationDirectory`; `fMin` and `fMax` are its sweep.
-    void showSimulation(const QString& title, const QString& simulationDirectory, double fMax, double fMin = 0);
+    /// Shows `title`'s runs in `simulationDirectory`; `fMax` is the top of its sweep and
+    /// `pulseSeconds` how long its excitation pulse plays (0 when unknown).
+    void showSimulation(const QString& title, const QString& simulationDirectory, double fMax, double pulseSeconds = 0);
     /// The analysis shown, once it's ready.
     std::shared_ptr<const TraceAnalysis> analysis() const { return _analysis; }
     TraceCanvas* canvas() const { return _canvas; }
@@ -147,7 +148,7 @@ private:
     std::shared_ptr<const BoardData> _board;
     std::shared_ptr<const PowerCanvas::Backdrop> _backdrop;
     QString _title, _simulationDirectory;
-    double _fMax = 0, _fMin = 0;
+    double _fMax = 0, _pulseSeconds = 0;
     std::shared_ptr<const TraceAnalysis> _analysis;
     int _generation = 0;
     std::optional<double> _selection;

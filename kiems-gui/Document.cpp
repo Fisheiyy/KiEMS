@@ -439,6 +439,18 @@ void Document::editSimulation(int index, const std::function<void(nlohmann::json
     if (*sim != before) touch();
 }
 
+double Document::pulseLength() const {
+    kiems::Frequency frequency;
+    try {
+        frequency = documentValue("/frequency").get<kiems::Frequency>();
+    } catch (const nlohmann::json::exception&) {
+        return 0;
+    }
+    const nlohmann::json gridMax = documentValue("/grid/max");
+    frequency.setShortPulseTop(kiems::Frequency::shortPulseTopForGrid(gridMax.is_number() ? gridMax.get<double>() : 0));
+    return frequency.pulseLength();
+}
+
 nlohmann::json Document::documentValue(const QString& pointer) const {
     const auto path = pointerFor(pointer);
     if (_json.contains(path)) return _json.at(path);

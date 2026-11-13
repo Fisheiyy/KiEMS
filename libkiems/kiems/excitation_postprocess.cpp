@@ -76,8 +76,7 @@ double excitationRecordEnd(const ExcitationConfig& excitation, const SimulationC
     if (run == runDurations.end()) {
         return primary > 0 ? std::min(primary, configuredEnd) : configuredEnd;
     }
-    const double fc = (frequency.stop() - frequency.start()) / 2.0;
-    const double pulseLength = fc > 0 ? 9.0 / (std::numbers::pi * fc) : 0.0; // CalcGaussianPulsExcitation's
+    const double pulseLength = frequency.pulseLength(); // CalcGaussianPulsExcitation's
     const double decay = std::max(0.0, run->second - pulseLength);
     const double end = excitation.startTime() + excitation.duration() + decay;
     return primary > 0 ? std::min(primary, end) : end;

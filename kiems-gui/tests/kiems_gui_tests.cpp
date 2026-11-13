@@ -329,6 +329,38 @@ private slots:
         type(boundary, "99"); // past the 64-cell limit
         QCOMPARE(number(document.documentValue("/grid/absorbing_boundary_cells")), 12.0);
         QCOMPARE(document.validate(), QString());
+
+        // The short pulse: off by default (and absent from the file), the sweep's own pulse.
+        type(stop, "350 MHz");
+        QCheckBox* shortPulse = nullptr;
+        for (QCheckBox* box : panel.findChildren<QCheckBox*>()) {
+            if (box->text().startsWith("Short excitation pulse")) shortPulse = box;
+        }
+        QVERIFY(shortPulse && !shortPulse->isChecked());
+        QVERIFY(document.documentValue("/frequency/pulse").is_null());
+        const double sweepPulse = 9 / (std::numbers::pi * (350e6 - 1e6) / 2);
+        QVERIFY(std::abs(document.pulseLength() - sweepPulse) < 1e-15);
+        shortPulse->setChecked(true);
+        QCOMPARE(document.documentValue("/frequency/pulse").get<std::string>(), std::string("short"));
+        // DC to 6 GHz: f0 = fc = 3 GHz, 0.95 ns -- whatever the sweep's top below that.
+        QVERIFY(std::abs(document.pulseLength() - 9 / (std::numbers::pi * 3e9)) < 1e-15);
+        kiems::Frequency parsed = document.documentValue("/frequency").get<kiems::Frequency>();
+        QCOMPARE(parsed.pulse(), kiems::ExcitationPulse::Short);
+        QCOMPARE(parsed.pulseF0(), 3e9);
+        QCOMPARE(parsed.pulseFc(), 3e9);
+        // Above 6 GHz the pulse follows the sweep; a coarse mesh lowers the top.
+        parsed.setStop(10e9);
+        QCOMPARE(parsed.pulseFc(), 5e9);
+        QVERIFY(kiems::Frequency::shortPulseTopForGrid(5000) < 6e9);
+        QCOMPARE(kiems::Frequency::shortPulseTopForGrid(500), 6e9);
+        nlohmann::json written = parsed;
+        QCOMPARE(written["pulse"].get<std::string>(), std::string("short"));
+        parsed.setPulse(kiems::ExcitationPulse::Sweep);
+        written = parsed;
+        QVERIFY(!written.contains("pulse"));
+        shortPulse->setChecked(false);
+        QVERIFY(std::abs(document.pulseLength() - sweepPulse) < 1e-15);
+        QCOMPARE(document.validate(), QString());
     }
 
     void heuristics() {
@@ -1278,7 +1310,8 @@ private slots:
         write("trace_probes.txt", probes);
 
         // A sweep whose pulse (fc = 3 GHz) is the one these waveforms carry: 0.95 ns, inside the 4 ns run.
-        const auto a = kiems_gui::analyseTrace(*board, dir.path(), 0, 6e9, 0, 6e9 - 2 * 3e9 + 1e-3);
+        const double pulseSeconds = 2 * 9 / (2 * std::numbers::pi * 3e9);
+        const auto a = kiems_gui::analyseTrace(*board, dir.path(), 0, 6e9, 0, pulseSeconds);
         QVERIFY2(a->ok(), qPrintable(a->error));
         QCOMPARE(a->driver.name, QString("U1 pin 1 (SIG)"));
         QCOMPARE(a->targetImpedance, 45.0);
@@ -1303,7 +1336,7 @@ private slots:
         view.resize(1200, 800);
         QSignalSpy analysed(&view, &kiems_gui::TraceView::analysed);
         view.setBoard(boardData);
-        view.showSimulation("Line", dir.path(), 6e9, 6e9 - 2 * 3e9 + 1e-3);
+        view.showSimulation("Line", dir.path(), 6e9, pulseSeconds);
         QVERIFY(analysed.wait(30000));
         QVERIFY(analysed.first().at(0).toBool());
         auto* findings = view.findChild<QTreeWidget*>("findings");

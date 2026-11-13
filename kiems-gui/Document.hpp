@@ -105,6 +105,10 @@ public:
     /// Sets every main excitation's pulse window.
     void setMainExcitationDuration(int simulation, double seconds);
 
+    /// How long, in seconds, the Gaussian pulse that drives every FDTD run plays: the sweep's own
+    /// or a short one ("/frequency/pulse"; see kiems::ExcitationPulse).
+    double pulseLength() const;
+
     /// The simulation's own JSON, for SimulationEditor; null if there's no such simulation.
     const nlohmann::json* simulationJson(int simulation) const { return this->simulation(simulation); }
     /// Applies `edit` to the simulation's JSON, signalling a change only if it changed anything.

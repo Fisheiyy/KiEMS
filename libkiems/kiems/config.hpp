@@ -1077,6 +1077,20 @@ private:
     double _lossTangent = 0;
 };
 
+/// Which Gaussian pulse drives the FDTD runs.
+enum class ExcitationPulse {
+    /// The pulse spans exactly the sweep (centre and half-width from start/stop). A low top
+    /// frequency makes it long: 18 / (2 pi fc) seconds, 16 ns for a sweep to 350 MHz.
+    Sweep,
+    /// A wider-band, shorter pulse, from DC to Frequency::shortPulseTop() (or the sweep's top if
+    /// higher). S-parameters are ratios of each frequency's reflected and incident waves, so the
+    /// pulse's own spectrum divides out wherever it carries energy. The runs then ring down sooner.
+    /// They are not bit-identical: the -60 dB end criterion counts all the energy, most of it now
+    /// above the sweep, so the residual at the lowest frequencies differs a little. On StickHub
+    /// (1 MHz-1 GHz) |S| moved at most 1.6e-4 and the run took 1.6x fewer steps.
+    Short,
+};
+
 /// Frequency config.
 class Frequency {
 public:
@@ -1085,12 +1099,36 @@ public:
     double stop() const { return _stop; }
     void setStop(double value) { _stop = value; }
 
+    ExcitationPulse pulse() const { return _pulse; }
+    void setPulse(ExcitationPulse value) { _pulse = value; }
+
+    /// The highest frequency a Short pulse is meant to reach: kShortPulseTop, or less when the
+    /// mesh's largest cell can't carry it (EMSConfig sets it from the grid; not saved).
+    double shortPulseTop() const { return _shortPulseTop; }
+    void setShortPulseTop(double value) { _shortPulseTop = value; }
+    /// shortPulseTop() for a mesh whose largest cell is `gridMax` micrometres (the configured
+    /// grid.max): kShortPulseTop, or the frequency at which FR-4's wavelength spans only ten such
+    /// cells if that is lower -- the inverse of Grid::applyFrequencyConstraint().
+    static double shortPulseTopForGrid(double gridMax);
+
+    /// The Gaussian pulse's centre frequency and 20 dB half-bandwidth (Copper's f0/fc).
+    double pulseF0() const;
+    double pulseFc() const;
+    /// The pulse's length in seconds: 2 x 9 / (2 pi fc), as Copper plays it.
+    double pulseLength() const;
+
+    /// Above about this a shorter pulse barely shortens a run, which is then ring-down bound, while
+    /// putting ever more of its energy outside the sweep. Validated at this value.
+    static constexpr double kShortPulseTop = 6e9;
+
 private:
     friend void to_json(nlohmann::json& j, const Frequency& f);
     friend void from_json(const nlohmann::json& j, Frequency& f);
 
     double _start = 1e6;
     double _stop = 6e9;
+    ExcitationPulse _pulse = ExcitationPulse::Sweep;
+    double _shortPulseTop = kShortPulseTop;
 };
 
 void to_json(nlohmann::json& j, const Frequency& f);

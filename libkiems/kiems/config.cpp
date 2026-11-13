@@ -558,12 +558,37 @@ LayerConfig::LayerConfig(LayerKind kind, std::string name, double thicknessMm, d
     }
 }
 
-void to_json(nlohmann::json& j, const Frequency& f) { j = nlohmann::json{{"start", f._start}, {"stop", f._stop}}; }
+double Frequency::pulseF0() const {
+    if (_pulse == ExcitationPulse::Short) return std::max(_stop, _shortPulseTop) / 2;
+    return (_start + _stop) / 2;
+}
+
+double Frequency::pulseFc() const {
+    if (_pulse == ExcitationPulse::Short) return std::max(_stop, _shortPulseTop) / 2;
+    return (_stop - _start) / 2;
+}
+
+double Frequency::shortPulseTopForGrid(double gridMax) {
+    if (!(gridMax > 0)) return kShortPulseTop;
+    return std::min(kShortPulseTop, 3e8 * 1e6 / std::sqrt(4.13) / (10 * gridMax));
+}
+
+double Frequency::pulseLength() const {
+    const double fc = pulseFc();
+    return fc > 0 ? 9.0 / (std::numbers::pi * fc) : 0.0;
+}
+
+void to_json(nlohmann::json& j, const Frequency& f) {
+    j = nlohmann::json{{"start", f._start}, {"stop", f._stop}};
+    // Written only when chosen, so documents that never touch it stay as they were.
+    if (f._pulse == ExcitationPulse::Short) j["pulse"] = "short";
+}
 
 void from_json(const nlohmann::json& j, Frequency& f) {
     const Frequency def;
     f._start = j.value("start", def._start);
     f._stop = j.value("stop", def._stop);
+    f._pulse = j.value("pulse", std::string("sweep")) == "short" ? ExcitationPulse::Short : ExcitationPulse::Sweep;
 }
 
 void Via::scaleToSimulationUnits(std::int32_t unitMultiplier) {
@@ -1050,6 +1075,7 @@ void from_json(const nlohmann::json& j, SimulationConfig& p) {
 
 void EMSConfig::_postInit() {
     _grid.applyFrequencyConstraint(_frequency.stop());
+    _frequency.setShortPulseTop(Frequency::shortPulseTopForGrid(_grid.max()));
     if (_frequency.start() > 0) {
         const double suggestedMargin = Margin::suggested(_frequency.start());
         if (_grid.margin().xy() < suggestedMargin || _grid.margin().z() < suggestedMargin) {

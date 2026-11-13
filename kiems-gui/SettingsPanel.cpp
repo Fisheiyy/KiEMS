@@ -116,6 +116,16 @@ SettingsPanel::SettingsPanel(Document* document, QWidget* parent) : QWidget(pare
         if (value && (!start || *value > *start)) _document->setDocumentValue("/frequency/stop", *value);
         refresh();
     });
+    _shortPulse = new QCheckBox(tr("Short excitation pulse (faster runs)"));
+    _shortPulse->setToolTip(
+        tr("Drives the runs with a short pulse reaching up to 6 GHz instead of one spanning exactly the frequency "
+           "range. A low top frequency otherwise makes the pulse long (16 ns for 350 MHz), and every run has to play "
+           "all of it. S-parameters are computed as ratios at each frequency, so they come out the same to within "
+           "about 1e-4; the runs ring down sooner. Off reproduces earlier results exactly."));
+    connect(_shortPulse, &QCheckBox::toggled, this, [this](bool on) {
+        _document->setDocumentValue("/frequency/pulse", on ? "short" : "sweep");
+        refresh();
+    });
     auto* frequencyRange = new QHBoxLayout;
     frequencyRange->setContentsMargins(0, 0, 0, 0);
     frequencyRange->addWidget(_frequencyStart, 1);
@@ -146,6 +156,7 @@ SettingsPanel::SettingsPanel(Document* document, QWidget* parent) : QWidget(pare
     _wavelengthNote = note();
 
     documentForm->addRow(tr("Frequency range:"), frequencyRange);
+    documentForm->addRow(QString(), _shortPulse);
     documentForm->addRow(tr("Max timesteps:"), _maxSteps);
     documentForm->addRow(tr("Min resolution:"), _gridDensity);
     documentForm->addRow(tr("Absorbing boundary (cells):"), _absorbingBoundary);
@@ -225,6 +236,11 @@ void SettingsPanel::refresh() {
                                  _document->simulationValue(_simulation, "/adversarial_shared_clock").get<bool>());
     }
     {
+        const QSignalBlocker blocker(_shortPulse);
+        const nlohmann::json pulse = open ? _document->documentValue("/frequency/pulse") : nlohmann::json();
+        _shortPulse->setChecked(pulse.is_string() && pulse.get<std::string>() == "short");
+    }
+    {
         const QSignalBlocker blocker(_terminateGround);
         _terminateGround->setChecked(haveSimulation &&
                                      _document->simulationValue(_simulation, "/terminate_ground_at_cut").get<bool>());
@@ -243,6 +259,10 @@ void SettingsPanel::refresh() {
             text = tr("At %1 the largest mesh cell is capped at %2.")
                        .arg(QuantityEdit::format(QuantityEdit::Kind::Frequency, *stop),
                             QuantityEdit::format(QuantityEdit::Kind::Length, std::floor(shortestCell)));
+        }
+        if (const double pulse = _document->pulseLength(); pulse > 0) {
+            if (!text.isEmpty()) text += ' ';
+            text += tr("The excitation pulse lasts %1.").arg(QuantityEdit::format(QuantityEdit::Kind::Time, pulse));
         }
         if (start && *start > 0) {
             // Margin::suggested(): a quarter of the vacuum wavelength at the start frequency.

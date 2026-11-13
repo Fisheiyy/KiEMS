@@ -361,10 +361,11 @@ public:
     /// there, and the progress it reports (total steps, planned time) reflects that real length.
     void setMaxTimestepsCap(std::optional<std::uint32_t> cap) { _maxTimestepsCap = cap; }
 
-    /// The Gaussian pulse center frequency/half-bandwidth derived from config().frequency(), exposed
-    /// so a Copper worker can build copper::CopperFDTDPortConfig::f0/fc directly.
-    double excitationF0() const { return (_config.frequency().start() + _config.frequency().stop()) / 2; }
-    double excitationFc() const { return (_config.frequency().stop() - _config.frequency().start()) / 2; }
+    /// The Gaussian pulse center frequency/half-bandwidth config().frequency() chooses (the sweep's
+    /// own, or a Short pulse's -- see ExcitationPulse), exposed so a Copper worker can build
+    /// copper::CopperFDTDPortConfig::f0/fc directly.
+    double excitationF0() const { return _config.frequency().pulseF0(); }
+    double excitationFc() const { return _config.frequency().pulseFc(); }
 
     /// `reflected`/`incident` are uf phasors per port (a same-length, all-NaN placeholder for any
     /// port with absorbSignal()==false, which never computes a meaningful incident/reflected split

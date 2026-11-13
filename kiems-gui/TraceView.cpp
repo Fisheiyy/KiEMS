@@ -635,12 +635,12 @@ void TraceView::setBoard(std::shared_ptr<const BoardData> board) {
     if (!_simulationDirectory.isEmpty() && (!_analysis || !_analysis->ok())) analyse();
 }
 
-void TraceView::showSimulation(const QString& title, const QString& simulationDirectory, double fMax, double fMin) {
+void TraceView::showSimulation(const QString& title, const QString& simulationDirectory, double fMax, double pulseSeconds) {
     const bool same = simulationDirectory == _simulationDirectory;
     _title = title;
     _simulationDirectory = simulationDirectory;
     _fMax = fMax;
-    _fMin = fMin;
+    _pulseSeconds = pulseSeconds;
     _heading->setText(title);
     const int previous = _driver->currentData().toInt();
     _driver->clear();
@@ -682,8 +682,8 @@ void TraceView::analyse() {
         emit analysed(_analysis->ok());
     });
     watcher->setFuture(QtConcurrent::run([board = _board, directory = _simulationDirectory, port = _driver->currentData().toInt(),
-                                          fMax = _fMax, fMin = _fMin, rise] {
-        return analyseTrace(*board, directory, port, fMax, rise, fMin);
+                                          fMax = _fMax, pulse = _pulseSeconds, rise] {
+        return analyseTrace(*board, directory, port, fMax, rise, pulse);
     }));
 }
 
