@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <deque>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -20,8 +21,15 @@
 #include "logging.hpp"
 
 #ifdef _WIN32
-#include <process.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 extern char** environ;
@@ -31,37 +39,66 @@ namespace kiems {
 using Cu::logError;
 namespace {
 
-/// A gnuplot process drawing one script, started by startGnuplot().
+/// A gnuplot process drawing one script, started by startGnuplot(). Its stderr goes to its own
+/// file, shown in one piece when it finishes: plots drawn side by side would otherwise interleave
+/// their warnings mid-line.
 struct GnuplotRun {
 #ifdef _WIN32
-    std::intptr_t process = -1;
+    HANDLE process = nullptr;
 #else
     pid_t process = -1;
 #endif
     std::filesystem::path script;
+    std::filesystem::path errors;
 };
 
 /// Starts `gnuplot script` (gnuplot found on the PATH, as Matplot++ finds it) without waiting.
 bool startGnuplot(const std::filesystem::path& script, GnuplotRun& run) {
     run.script = script;
+    run.errors = script;
+    run.errors += ".err";
 #ifdef _WIN32
-    // _wspawnlp joins its arguments with spaces, so a path with spaces needs its own quotes.
-    const std::wstring quoted = L"\"" + script.wstring() + L"\"";
-    run.process = _wspawnlp(_P_NOWAIT, L"gnuplot", L"gnuplot", quoted.c_str(), nullptr);
-    return run.process != -1;
+    SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE errors = CreateFileW(run.errors.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inheritable, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (errors == INVALID_HANDLE_VALUE) return false;
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = errors;
+    std::wstring command = L"gnuplot \"" + script.wstring() + L"\"";
+    PROCESS_INFORMATION process{};
+    const BOOL started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
+                                        &startup, &process);
+    CloseHandle(errors);
+    if (!started) return false;
+    CloseHandle(process.hThread);
+    run.process = process.hProcess;
+    return true;
 #else
     const std::string path = script.string();
+    const std::string errorsPath = run.errors.string();
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 2, errorsPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     std::array<char*, 3> argv = {const_cast<char*>("gnuplot"), const_cast<char*>(path.c_str()), nullptr};
-    return posix_spawnp(&run.process, "gnuplot", nullptr, nullptr, argv.data(), environ) == 0;
+    const bool started = posix_spawnp(&run.process, "gnuplot", &actions, nullptr, argv.data(), environ) == 0;
+    posix_spawn_file_actions_destroy(&actions);
+    return started;
 #endif
 }
 
-/// Waits for `run`; deletes its script if gnuplot succeeded, else keeps it (to see why) and says so.
+/// Waits for `run` and passes on what it printed to stderr; deletes its script if gnuplot
+/// succeeded, else keeps it (to see why) and says so.
 bool finishGnuplot(const GnuplotRun& run) {
     bool ok = false;
 #ifdef _WIN32
-    int status = 0;
-    ok = _cwait(&status, run.process, 0) != -1 && status == 0;
+    DWORD exitCode = 1;
+    ok = WaitForSingleObject(run.process, INFINITE) == WAIT_OBJECT_0 && GetExitCodeProcess(run.process, &exitCode) &&
+         exitCode == 0;
+    CloseHandle(run.process);
 #else
     int status = 0;
     pid_t waited = -1;
@@ -69,8 +106,18 @@ bool finishGnuplot(const GnuplotRun& run) {
     }
     ok = waited == run.process && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 #endif
+    {
+        std::ifstream file(run.errors, std::ios::binary);
+        const std::string printed((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        if (!printed.empty()) {
+            std::fwrite(printed.data(), 1, printed.size(), stderr);
+            if (printed.back() != '\n') std::fputc('\n', stderr);
+            std::fflush(stderr);
+        }
+    }
+    std::error_code ignored;
+    std::filesystem::remove(run.errors, ignored);
     if (ok) {
-        std::error_code ignored;
         std::filesystem::remove(run.script, ignored);
     } else {
         logError("gnuplot failed to draw " + pathToUtf8(run.script) + "; the script is kept to see why");
