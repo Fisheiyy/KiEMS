@@ -794,8 +794,17 @@ void writeFieldFrameManifests(const FieldFrameCapture& capture) {
 /// (simulation_data.hpp) hands `sim` to this callback it has already had adoptSlicedBoard()/
 /// adoptGridLines()/populateGeometry()/setupPorts() called on it, so this only does the FDTD part
 /// (prepareRunDirectory(), then Copper's run), mirroring copper_fdtd_worker/main.cpp's sequence.
+/// One CopperOperator shared by the port runs of a simulation: every port's scene is the same but for
+/// which excitation is on, so the runs after the first only rebuild their excitation (see
+/// copper::CopperOperatorCache). KIEMS_NO_OPERATOR_REUSE=1 builds every port's afresh.
+struct OperatorReuse {
+    std::filesystem::path simulationDirectory;
+    std::shared_ptr<copper::CopperOperatorCache> cache = std::make_shared<copper::CopperOperatorCache>();
+    bool enabled = std::getenv("KIEMS_NO_OPERATOR_REUSE") == nullptr;
+};
+
 std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std::int32_t excitedPortNumber, bool onGPU,
-                                                           FieldFrameCapture* capture) {
+                                                           FieldFrameCapture* capture, OperatorReuse* reuse = nullptr) {
     const std::filesystem::path cwd = std::filesystem::current_path();
     if (auto result = sim.prepareRunDirectory(excitedPortNumber); !result) {
         return std::unexpected(result.error());
@@ -807,6 +816,14 @@ std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std:
     portConfig.f0 = sim.excitationF0();
     portConfig.fc = sim.excitationFc();
     portConfig.maxTimesteps = sim.maxTimesteps();
+    if (reuse && reuse->enabled) {
+        // A different simulation's scene: the kept operator goes before this one's is built.
+        if (probeDir.parent_path() != reuse->simulationDirectory) {
+            reuse->cache->clear();
+            reuse->simulationDirectory = probeDir.parent_path();
+        }
+        portConfig.operatorCache = reuse->cache;
+    }
 
     std::optional<copper::FieldFrameSeriesRequest> fieldSeries;
     if (capture) {
@@ -1161,6 +1178,7 @@ int runCli(int argc, char** argv) {
                                                                 : copper::FieldSamplePrecision::Float32;
         }
         const bool onGPU = options.backend == FDTDBackend::CopperGPU;
+        OperatorReuse reuse;
         auto result =
             dumpRequested
                 ? SimulationResult::run(*geometryResult, options, board,
@@ -1171,9 +1189,10 @@ int runCli(int argc, char** argv) {
                 ? SimulationResult::run(*geometryResult, options, board,
                                         [&](Simulation& sim, std::int32_t excitedPortNumber) {
                                             return runPortInProcess(sim, excitedPortNumber, onGPU,
-                                                                    capture ? &*capture : nullptr);
+                                                                    capture ? &*capture : nullptr, &reuse);
                                         })
                 : SimulationResult::run(*geometryResult, options, board);
+        reuse.cache->clear(); // its arrays aren't needed for postprocessing
         if (capture) writeFieldFrameManifests(*capture);
         if (!result) {
             logError(result.error());
