@@ -281,7 +281,7 @@ std::optional<std::vector<std::complex<double>>> Postprocessor::getImpedance(std
     // silently return the all-NaN placeholder). This method isn't called anywhere in kiems's
     // own CLI flow, so the bug is unreachable there, but the correct condition is used here.
     if (!isValid(_impedances[static_cast<std::size_t>(port)])) {
-        logError("Impedance for port " + std::to_string(port) + " wasn't calculated");
+        // Not an error: only excited ports have an impedance.
         return std::nullopt;
     }
     return _impedances[static_cast<std::size_t>(port)];
@@ -297,7 +297,7 @@ std::optional<std::vector<std::complex<double>>> Postprocessor::getSParam(std::i
     if (isValid(sParam)) {
         return sParam;
     }
-    logError("S" + std::to_string(outputPort) + std::to_string(inputPort) + " wasn't calculated");
+    // Not an error: only excited ports' columns exist, and callers ask for every pair.
     return std::nullopt;
 }
 
@@ -308,7 +308,7 @@ std::optional<std::vector<double>> Postprocessor::getDelay(std::int32_t outputPo
     }
     const auto& delay = _delays[static_cast<std::size_t>(outputPort)][static_cast<std::size_t>(inputPort)];
     if (std::any_of(delay.begin(), delay.end(), [](double v) { return std::isnan(v); })) {
-        logError("Delay " + std::to_string(inputPort) + ">" + std::to_string(outputPort) + " wasn't calculated");
+        // Not an error: only excited ports' columns exist, and callers ask for every pair.
         return std::nullopt;
     }
     return delay;
