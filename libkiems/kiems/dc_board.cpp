@@ -12,6 +12,7 @@
 #include <sstream>
 
 #include "path_utf8.hpp"
+#include "plot_figure.hpp"
 
 namespace kiems::dc {
 
@@ -504,7 +505,7 @@ void plotLayer(const LayerResult& layer, const AnalysisConfig& config, bool curr
                const std::filesystem::path& path) {
     Raster raster;
     raster.fill(layer, currentDensity);
-    auto figure = matplot::figure(true);
+    auto figure = newPlotFigure();
     figure->size(1000, 800);
     auto axes = figure->current_axes();
     axes->image(raster.xMin, raster.xMin + raster.pixel * (raster.width - 1), raster.yMin,

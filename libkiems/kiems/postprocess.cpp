@@ -16,6 +16,7 @@
 #include "config.hpp"
 #include "logging.hpp"
 #include "path_utf8.hpp"
+#include "plot_figure.hpp"
 
 namespace kiems {
 
@@ -68,7 +69,7 @@ std::vector<double> _scaleFreqGHz(const std::vector<double>& freq) {
     return result;
 }
 
-matplot::figure_handle _newFigure() { return matplot::figure(true); }
+matplot::figure_handle _newFigure() { return newPlotFigure(); }
 
 void _saveFigure(const matplot::figure_handle& fig, const std::filesystem::path& path, bool transparent) {
     if (transparent) {

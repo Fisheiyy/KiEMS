@@ -13,6 +13,7 @@
 
 #include "logging.hpp"
 #include "path_utf8.hpp"
+#include "plot_figure.hpp"
 
 namespace kiems {
 
@@ -32,7 +33,7 @@ std::string _sanitizeForFilename(std::string name) {
     return name;
 }
 
-matplot::figure_handle _newFigure() { return matplot::figure(true); }
+matplot::figure_handle _newFigure() { return newPlotFigure(); }
 
 void _saveFigure(const matplot::figure_handle& fig, const std::filesystem::path& path, bool transparent) {
     if (transparent) {
