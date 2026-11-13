@@ -160,6 +160,7 @@ int main(int argc, char** argv) {
     portConfig.f0 = simulation.excitationF0();
     portConfig.fc = simulation.excitationFc();
     portConfig.maxTimesteps = simulation.maxTimesteps();
+    portConfig.captureFieldSnapshot = false; // only the probes are written out
     // Check the solver's rasterized metal for nets the board keeps apart that it joins anyway (see
     // Simulation::writeMetalShortReport()); a failure to check only costs the check, never the run.
     try {

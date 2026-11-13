@@ -181,6 +181,7 @@ int main(int argc, char** argv) {
     portConfig.f0 = simulation.excitationF0();
     portConfig.fc = simulation.excitationFc();
     portConfig.maxTimesteps = maxTimestepsOverride.value_or(simulation.maxTimesteps());
+    portConfig.captureFieldSnapshot = false; // only the probes are written out
     if (irregularDomain) {
         for (const auto& loop : simulation.slicedBoard().cutoutLoops) {
             std::vector<copper::CopperFDTDPortConfig::DomainPoint> out;

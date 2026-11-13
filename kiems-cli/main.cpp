@@ -817,6 +817,8 @@ std::expected<std::uint32_t, std::string> runPortInProcess(Simulation& sim, std:
     portConfig.f0 = sim.excitationF0();
     portConfig.fc = sim.excitationFc();
     portConfig.maxTimesteps = sim.maxTimesteps();
+    // Nothing here reads in-memory field frames: they're stored on disk (--field-frames) or not at all.
+    portConfig.captureFieldSnapshot = false;
     if (reuse && reuse->enabled) {
         // A different simulation's scene: the kept operator goes before this one's is built.
         if (probeDir.parent_path() != reuse->simulationDirectory) {
