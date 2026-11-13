@@ -140,6 +140,15 @@ SettingsPanel::SettingsPanel(Document* document, QWidget* parent) : QWidget(pare
                                  tr("The mesh's target cell size around copper: the main control of how fine, and how "
                                     "slow, a simulation is."));
     _gridDensity->setMinimum(1e-3);
+    _mergeCloseLines = new QCheckBox(tr("Merge mesh lines closer than the min resolution (faster runs)"));
+    _mergeCloseLines->setToolTip(
+        tr("Copper edges a little closer than the min resolution otherwise keep a sliver cell between them, and "
+           "the smallest cell sets every run's timestep. Merging them roughly halved the run time on a test board, "
+           "while the results moved about a tenth as much as the mesh's own error. Off reproduces earlier results "
+           "exactly."));
+    connect(_mergeCloseLines, &QCheckBox::toggled, this, [this](bool on) {
+        _document->setDocumentValue("/grid/merge_close_lines", on);
+    });
     _absorbingBoundary = documentField(Kind::Integer, "/grid/absorbing_boundary_cells",
                                        tr("How many cells deep the absorbing boundary is on every face of the domain."));
     _absorbingBoundary->setMinimum(1);
@@ -159,6 +168,7 @@ SettingsPanel::SettingsPanel(Document* document, QWidget* parent) : QWidget(pare
     documentForm->addRow(QString(), _shortPulse);
     documentForm->addRow(tr("Max timesteps:"), _maxSteps);
     documentForm->addRow(tr("Min resolution:"), _gridDensity);
+    documentForm->addRow(QString(), _mergeCloseLines);
     documentForm->addRow(tr("Absorbing boundary (cells):"), _absorbingBoundary);
     documentForm->addRow(tr("Margin width:"), _marginWidth);
     documentForm->addRow(tr("Via plating thickness:"), _platingThickness);
@@ -234,6 +244,11 @@ void SettingsPanel::refresh() {
         const QSignalBlocker blocker(_sharedClock);
         _sharedClock->setChecked(haveSimulation &&
                                  _document->simulationValue(_simulation, "/adversarial_shared_clock").get<bool>());
+    }
+    {
+        const QSignalBlocker blocker(_mergeCloseLines);
+        const nlohmann::json merge = open ? _document->documentValue("/grid/merge_close_lines") : nlohmann::json();
+        _mergeCloseLines->setChecked(merge.is_boolean() && merge.get<bool>());
     }
     {
         const QSignalBlocker blocker(_shortPulse);

@@ -52,6 +52,7 @@ private:
     QCheckBox* _shortPulse;
     QuantityEdit* _maxSteps;
     QuantityEdit* _gridDensity;
+    QCheckBox* _mergeCloseLines;
     QuantityEdit* _absorbingBoundary;
     QuantityEdit* _marginWidth;
     QuantityEdit* _platingThickness;

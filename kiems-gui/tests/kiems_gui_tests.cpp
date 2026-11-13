@@ -361,6 +361,22 @@ private slots:
         shortPulse->setChecked(false);
         QVERIFY(std::abs(document.pulseLength() - sweepPulse) < 1e-15);
         QCOMPARE(document.validate(), QString());
+
+        // Merging close mesh lines: off by default and absent from the file until chosen.
+        QCheckBox* merge = nullptr;
+        for (QCheckBox* box : panel.findChildren<QCheckBox*>()) {
+            if (box->text().startsWith("Merge mesh lines")) merge = box;
+        }
+        QVERIFY(merge && !merge->isChecked());
+        QVERIFY(document.documentValue("/grid/merge_close_lines").is_null());
+        merge->setChecked(true);
+        QCOMPARE(document.documentValue("/grid/merge_close_lines").get<bool>(), true);
+        kiems::Grid grid = document.documentValue("/grid").get<kiems::Grid>();
+        QVERIFY(grid.mergeCloseLines());
+        grid.setMergeCloseLines(false);
+        nlohmann::json gridJson = grid;
+        QVERIFY(!gridJson.contains("merge_close_lines"));
+        QCOMPARE(document.validate(), QString());
     }
 
     void heuristics() {

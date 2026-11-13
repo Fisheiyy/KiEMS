@@ -1251,6 +1251,14 @@ public:
     /// Copper's absorber grades them -- so changing it changes the geometry.
     std::int32_t absorbingBoundaryCells() const { return _absorbingBoundaryCells; }
     void setAbsorbingBoundaryCells(std::int32_t value) { _absorbingBoundaryCells = value; }
+    /// Whether X/Y mesh lines closer than optimal()/cellRatio().xy() merge, instead of only those
+    /// closer than half that. Off, a pair of copper edges a little over 20 um apart keeps a sliver
+    /// cell between them, and that one cell sets every run's timestep. On StickHub merging them took
+    /// the timestep from 45.8 to 75.1 fs and a run from 70 to 33 s, while the S-parameters moved
+    /// ten times less than the mesh's own error against one twice as fine (|dS| 0.014 vs 0.12). On
+    /// a 4-layer board whose 0.1 mm prepreg holds 25 um cells: 35.5 -> 50.7 fs, 13% fewer cells.
+    bool mergeCloseLines() const { return _mergeCloseLines; }
+    void setMergeCloseLines(bool value) { _mergeCloseLines = value; }
 
     /// Clamp max/perpendicular/diagonal/optimal based on the minimum simulated wavelength
     /// (mirrors the grid-related portion of _Config.__post_init__). The margin is left alone; see
@@ -1273,6 +1281,7 @@ private:
     Margin _margin;
     CellRatio _cellRatio;
     std::int32_t _absorbingBoundaryCells = constants::defaultAbsorbingBoundaryCells;
+    bool _mergeCloseLines = false;
 };
 
 void to_json(nlohmann::json& j, const Grid& g);

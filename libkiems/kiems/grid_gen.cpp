@@ -96,10 +96,11 @@ std::vector<double> _extendPMLBand(std::vector<double> lines, std::int32_t pmlCe
     return lines;
 }
 
-/// Merge grid lines that are too close to each other.
-std::vector<double> _dedupGrid(std::vector<double> grid, double gridMin, const std::vector<double>& edgeGrid) {
-    // Lines closer than gridMin / 2 collapse into one. A protected (edgeGrid) line marks real copper
-    // and never moves for an unprotected neighbour, which it absorbs; two lines of the same kind meet
+/// Merge grid lines that are too close to each other: closer than gridMin * `mergeFraction`.
+std::vector<double> _dedupGrid(std::vector<double> grid, double gridMin, const std::vector<double>& edgeGrid,
+                               double mergeFraction = 0.5) {
+    // Lines closer than gridMin / 2 (with Grid::mergeCloseLines(), gridMin) collapse into one. A
+    // protected (edgeGrid) line marks real copper and never moves for an unprotected neighbour, which it absorbs; two lines of the same kind meet
     // halfway. Merging two copper edges can close the gap between them -- a ball and the pour
     // across its clearance landing on one row of nodes -- but GridGenerator reopens exactly those
     // gaps afterwards (grid_detail::resolveCopperJoins()), which costs far fewer cells and far less
@@ -112,8 +113,9 @@ std::vector<double> _dedupGrid(std::vector<double> grid, double gridMin, const s
     std::sort(grid.begin(), grid.end());
     std::vector<double> result;
     result.reserve(grid.size());
+    const double mergeBelow = gridMin * mergeFraction;
     for (const double line : grid) {
-        if (result.empty() || line - result.back() >= gridMin / 2) {
+        if (result.empty() || line - result.back() >= mergeBelow) {
             result.push_back(line);
             continue;
         }
@@ -676,6 +678,7 @@ public:
         const double gridPerp = _grid.perpendicular();
 
         resolveEdgeRegions();
+        const double mergeFraction = _grid.mergeCloseLines() ? 1.0 : 0.5;
         std::vector<double> grid;
         // `_board` is the minimum outer extent (sliced board + configured vacuum margin). It must
         // not itself be passed through Region's generic two-sided densifier: that algorithm treats
@@ -737,7 +740,7 @@ public:
         for (const auto& reg : _parallel) {
             grid = reg.densifyRegionGrid(grid, gridSize, gridMin, cellRatio);
         }
-        grid = _dedupGrid(grid, gridMin, edgeGrid);
+        grid = _dedupGrid(grid, gridMin, edgeGrid, mergeFraction);
 
         // Differential-pair coupling-gap regions -- densified at the same `optimal` target as
         // _parallel (the trace bodies themselves), right alongside them and before the coarser
@@ -746,27 +749,27 @@ public:
         for (const auto& reg : _diffPairGap) {
             grid = reg.densifyRegionGrid(grid, gridSize, gridMin, cellRatio);
         }
-        grid = _dedupGrid(grid, gridMin, edgeGrid);
+        grid = _dedupGrid(grid, gridMin, edgeGrid, mergeFraction);
 
         for (const auto& reg : _diagonal) {
             grid = reg.densifyRegionGrid(grid, gridDiag, gridMin, cellRatio);
         }
-        grid = _dedupGrid(grid, gridMin, edgeGrid);
+        grid = _dedupGrid(grid, gridMin, edgeGrid, mergeFraction);
 
         for (const auto& reg : _perpendicular) {
             grid = reg.densifyRegionGrid(grid, gridPerp, gridMin, cellRatio);
         }
-        grid = _dedupGrid(grid, gridMin, edgeGrid);
+        grid = _dedupGrid(grid, gridMin, edgeGrid, mergeFraction);
 
         const Region slicedBoardRegion(_trustedMin, _trustedMax);
         grid = slicedBoardRegion.densifyRegionGrid(grid, _grid.max(), gridMin, cellRatio);
-        grid = _dedupGrid(grid, gridMin, edgeGrid);
+        grid = _dedupGrid(grid, gridMin, edgeGrid, mergeFraction);
         // Delete every line the general density passes may have placed beyond the cut board, then
         // construct the vacuum region from scratch. This makes the intended ordering explicit:
         // cut geometry -> mesh cut geometry -> monotonically expanding padding -> uniform CPML.
         grid = grid_detail::rebuildExteriorPadding(std::move(grid), _trustedMin, _trustedMax,
                                                     _board.min, _board.max, _grid.max(), cellRatio,
-                                                    gridMin / 2.0);
+                                                    gridMin * mergeFraction);
         // _dedupGrid() sorts internally, so grid is already sorted here -- front()/back() are the
         // core mesh's own extent, before _extendPMLBand() appends the PML band beyond it. Captured
         // in the same coordinate space compileGrid()'s own returned lines end up in (see
