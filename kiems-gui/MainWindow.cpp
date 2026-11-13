@@ -10,6 +10,7 @@
 #include "ResultsView.hpp"
 #include "SimulationEditor.hpp"
 #include "SimulationSet.hpp"
+#include "SignalSetup.hpp"
 #include "TraceView.hpp"
 #include "EyeView.hpp"
 #include "Icons.hpp"
@@ -47,6 +48,9 @@
 #include <QStatusBar>
 #include <QStyle>
 #include <QTimer>
+#include <QPointer>
+#include <QFile>
+#include <QTextBrowser>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -285,6 +289,7 @@ MainWindow::MainWindow() {
     connect(&_document, &Document::modifiedChanged, this, &MainWindow::updateTitle);
     connect(_addButton, &QPushButton::clicked, this, [this] {
         QMenu menu(this);
+        menu.addAction(_addSignalAction);
         menu.addAction(_addAction);
         menu.addAction(_addSetAction);
         menu.addAction(_addPowerAction);
@@ -383,7 +388,11 @@ void MainWindow::createActions() {
     file->addAction(tr("E&xit"), QKeySequence::Quit, this, &QWidget::close);
 
     QMenu* simulation = menuBar()->addMenu(tr("&Simulation"));
+    _addSignalAction = simulation->addAction(tr("&New Signal Simulation..."), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N),
+                                             this, &MainWindow::addSignalSimulation);
+    _addSignalAction->setToolTip(tr("Simulate one signal -- a USB pair, say -- set up from a few choices."));
     _addAction = simulation->addAction(tr("&Add Simulation..."), this, &MainWindow::addSimulation);
+    _addAction->setToolTip(tr("Add an empty simulation, to set up net by net and pin by pin."));
     _addSetAction = simulation->addAction(tr("Add Simulation &Set..."), this, &MainWindow::addSimulationSet);
     _addSetAction->setToolTip(tr("Add a template that generates one simulation per net it selects."));
     _addPowerAction = simulation->addAction(tr("Add &Power Analysis..."), this, &MainWindow::addPowerAnalysis);
@@ -404,6 +413,52 @@ void MainWindow::createActions() {
     view->addAction(tr("&Fit Board"), QKeySequence(Qt::CTRL | Qt::Key_0), this, [this] { _boardView->fitToBoard(); });
     view->addAction(_logDock->toggleViewAction());
     view->addAction(_jobsDock->toggleViewAction());
+
+    QMenu* help = menuBar()->addMenu(tr("&Help"));
+    help->addAction(tr("&Simulating a Signal"), QKeySequence::HelpContents, this, &MainWindow::showGuide);
+}
+
+void MainWindow::showGuide() {
+    // One guide window, brought back rather than opened again.
+    static QPointer<QDialog> guide;
+    if (!guide) {
+        guide = new QDialog(this);
+        guide->setWindowTitle(tr("Simulating a Signal"));
+        guide->resize(820, 860);
+        auto* layout = new QVBoxLayout(guide);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto* text = new QTextBrowser;
+        text->setOpenExternalLinks(true);
+        QFile file(":/guide/SimulatingASignal.md");
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) text->setMarkdown(QString::fromUtf8(file.readAll()));
+        // A little room round the text, and its tables ruled.
+        text->document()->setDocumentMargin(24);
+        text->document()->setDefaultStyleSheet("table { border-collapse: collapse; } td, th { padding: 4px 8px; }");
+        layout->addWidget(text);
+    }
+    guide->show();
+    guide->raise();
+    guide->activateWindow();
+}
+
+void MainWindow::addSignalSimulation() {
+    if (!_document.isOpen()) return;
+    const auto board = _boardModel.data();
+    if (!board) {
+        QMessageBox::information(this, tr("KiEMS"), tr("The board is still loading; try again once it has."));
+        return;
+    }
+    SignalWizard wizard(_document, board, this);
+    if (wizard.exec() != QDialog::Accepted) return;
+    const SignalPlan plan = wizard.plan();
+    int index;
+    {
+        const Document::ChangeBatch batch(_document);
+        index = _document.addSimulation(_document.uniqueSimulationName(plan.name), guessGroundNet());
+        applySignalPlan(_document, board.get(), index, plan);
+    }
+    showPage(index, Page::Board);
+    showStatus(tr("Created %1: run it with \u25B6 or Ctrl+R.").arg(_document.simulationName(index)));
 }
 
 bool MainWindow::openDocument(const QString& path) {
@@ -1100,8 +1155,11 @@ void MainWindow::selectionChanged() {
     }
     if (!item || (simulation < 0 && page < 0)) {
         _inspector->setSimulation(-1);
-        static_cast<QLabel*>(_emptyPage)->setText(_document.isOpen() ? tr("No Simulation Selected")
-                                                                     : tr("Open or create a simulation document to begin."));
+        static_cast<QLabel*>(_emptyPage)->setText(
+            !_document.isOpen() ? tr("Open or create a simulation document to begin.")
+            : _document.simulationCount() == 0
+                ? tr("No Simulations Yet\n\nAdd one with + \u203A New Signal Simulation,\nor see Help \u203A Simulating a Signal.")
+                : tr("No Simulation Selected"));
         _pages->setCurrentWidget(_emptyPage);
         _inspector->hide();
         updateActions();
@@ -1222,6 +1280,7 @@ void MainWindow::updateActions() {
     const bool canRun = !PipelineRunner::cliPath().isEmpty();
     _saveAction->setEnabled(open);
     _addAction->setEnabled(open);
+    _addSignalAction->setEnabled(open);
     _addSetAction->setEnabled(open);
     _addPowerAction->setEnabled(open);
     _addButton->setEnabled(open);

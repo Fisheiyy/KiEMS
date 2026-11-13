@@ -11,6 +11,7 @@
 #include "PowerAnalysis.hpp"
 #include "PowerView.hpp"
 #include "RunEstimate.hpp"
+#include "SignalSetup.hpp"
 #include "TraceView.hpp"
 #include "QuantityEdit.hpp"
 #include "Report.hpp"
@@ -43,7 +44,9 @@
 #include <QtTest>
 
 #include <complex>
+#include <map>
 #include <numbers>
+#include <set>
 
 using kiems_gui::Document;
 using kiems_gui::EyeTestPreset;
@@ -1319,6 +1322,142 @@ private slots:
             view.show();
             view.grab().save(QDir(snapshots).filePath("trace.png"));
         }
+    }
+
+    void signalSetup() {
+        // A USB channel: U1 drives /D+ and /D-, which run through 27 ohm resistors R1 and R2 to
+        // /_D+ and /_D- at connector J1. R9 terminates across the pair and C5 decouples a line to
+        // GND: neither is in series with the signal.
+        auto board = std::make_shared<kiems_gui::BoardData>();
+        board->copperLayers = {"F.Cu", "B.Cu"};
+        board->nets = {"GND", "+3V3", "/D+", "/D-", "/_D+", "/_D-", "/OTHER"};
+        using Pin = libkicad::FootprintPin;
+        board->footprints = {
+            {"U1", "CH340", {Pin{"1", "", "/D+", "bidirectional"}, Pin{"2", "", "/D-", "bidirectional"}, Pin{"3", "", "GND", "power_in"}}},
+            {"R1", "27", {Pin{"1", "", "/D+", "passive"}, Pin{"2", "", "/_D+", "passive"}}},
+            {"R2", "27", {Pin{"1", "", "/D-", "passive"}, Pin{"2", "", "/_D-", "passive"}}},
+            {"R9", "90", {Pin{"1", "", "/D+", "passive"}, Pin{"2", "", "/D-", "passive"}}},
+            {"C5", "100n", {Pin{"1", "", "/OTHER", "passive"}, Pin{"2", "", "GND", "passive"}}},
+            {"J1", "USB_C", {Pin{"A6", "", "/_D+", "passive"}, Pin{"A7", "", "/_D-", "passive"},
+                             Pin{"B6", "", "/_D+", "passive"}, Pin{"B7", "", "/_D-", "passive"}}}};
+        for (const auto& footprint : board->footprints) {
+            for (const auto& pin : footprint.pins) {
+                board->pads.push_back({footprint.reference, pin.number, pin.netName, pin.pinType, 0, 0, 0, "F.Cu", 0.3, 0.3});
+            }
+        }
+        Document document;
+        QVERIFY(makeDocument(document));
+        document.setDocumentValue("/frequency/stop", 350e6);
+
+        const auto nets = kiems_gui::signalNets(*board);
+        QVERIFY(nets.contains("/D+") && !nets.contains("GND") && !nets.contains("+3V3"));
+        const kiems_gui::SignalPlan plan = kiems_gui::suggestSignal(*board, document, "/D+", true);
+        QVERIFY(plan.differential);
+        QCOMPARE(plan.nets, QStringList({"/D+", "/_D+"}));
+        QCOMPARE(plan.partners, QStringList({"/D-", "/_D-"}));
+        QCOMPARE(plan.seriesParts, QStringList({"R1", "R2", "R9"})); // R9 across the pair, but not C5 to ground
+        QVERIFY(plan.driver && plan.driver->footprint == "U1" && plan.driver->pin == "1");
+        QCOMPARE(plan.receivers.size(), 2); // J1 A6 and B6 (not R9's pin): the partner pins follow
+        QCOMPARE(plan.standard, QString("usb_full_speed"));
+        QCOMPARE(plan.impedance, 45.0);
+        QVERIFY(plan.sweepStop && *plan.sweepStop == 3e9); // 350 MHz is too low for a trace
+        const QString summary = kiems_gui::describeSignalPlan(plan);
+        QVERIFY2(summary.contains("90 Ω differential") && summary.contains("R1, R2, R9") && summary.contains("U1 pin 1"),
+                 qPrintable(summary));
+
+        // Applied: the pair, its four nets at 45 ohm, the resistors, the driver in antiphase, the
+        // receivers and their partners probed, the USB eye test and the wider sweep.
+        const int index = document.addSimulation(document.uniqueSimulationName(plan.name), "GND");
+        kiems_gui::applySignalPlan(document, board.get(), index, plan);
+        const nlohmann::json sim = *document.simulationJson(index);
+        QCOMPARE(sim["is_differential_pair"].get<bool>(), true);
+        QCOMPARE(sim["involved_nets"].size(), std::size_t(4));
+        for (const auto& net : sim["involved_nets"]) QCOMPARE(net["impedance"].get<double>(), 45.0);
+        QCOMPARE(sim["included_components"].size(), std::size_t(3));
+        QCOMPARE(sim["excitations"].size(), std::size_t(2));
+        double amplitudes = 0;
+        for (const auto& excitation : sim["excitations"]) {
+            QCOMPARE(QString::fromStdString(excitation["footprint"].get<std::string>()), QString("U1"));
+            amplitudes += excitation["amplitude"].get<double>();
+        }
+        QCOMPARE(amplitudes, 0.0); // +1 and -1
+        int probed = 0;
+        for (const auto& net : sim["involved_nets"]) {
+            for (const auto& pin : net.value("probed_pins", nlohmann::json::array())) {
+                if (pin["footprint"] == "J1") ++probed;
+            }
+        }
+        QCOMPARE(probed, 4); // A6, B6 and their partners A7, B7
+        QCOMPARE(sim["eye_test"]["standard"].get<std::string>(), std::string("usb_full_speed"));
+        QCOMPARE(sim["eye_bit_rate"].get<double>(), 12e6);
+        QCOMPARE(document.documentValue("/frequency/stop").get<double>(), 3e9);
+        QVERIFY2(document.validate().isEmpty(), qPrintable(document.validate()));
+
+        // The dialog shows the same plan, and a single trace has no partner or antiphase.
+        kiems_gui::SignalWizard wizard(document, board);
+        QCOMPARE(wizard.plan().nets.isEmpty(), false);
+        const kiems_gui::SignalPlan single = kiems_gui::suggestSignal(*board, document, "/OTHER", false);
+        QVERIFY(!single.differential && single.partners.isEmpty() && single.seriesParts.isEmpty());
+        QVERIFY(!single.sweepStop); // the sweep is 3 GHz now
+        if (const QString snapshots = qEnvironmentVariable("KIEMS_GUI_SNAPSHOTS"); !snapshots.isEmpty()) {
+            document.setDocumentValue("/frequency/stop", 350e6);
+            kiems_gui::SignalWizard shown(document, board);
+            shown.setAttribute(Qt::WA_DontShowOnScreen);
+            shown.show();
+            shown.findChild<QComboBox*>()->setCurrentText("/D+");
+            QApplication::processEvents();
+            shown.grab().save(QDir(snapshots).filePath("signal_wizard.png"));
+        }
+
+        // As the remote board has it: the MCU's pins are on nets named for the pins (no D+/D-), behind
+        // R16 and R17; the charger U2 and ESD array U7 sit on /D+ and /D-; the connector is on /_D+
+        // and /_D-, which only U7 joins to the rest.
+        auto remote = std::make_shared<kiems_gui::BoardData>();
+        remote->copperLayers = {"F.Cu", "B.Cu"};
+        remote->nets = {"GND", "Net-(U1-IO27)", "Net-(U1-IO26)", "/D+", "/D-", "/_D+", "/_D-"};
+        remote->footprints = {
+            {"U1", "ESP32-H2", {Pin{"27", "", "Net-(U1-IO27)", "bidirectional"}, Pin{"26", "", "Net-(U1-IO26)", "bidirectional"}}},
+            {"R16", "22", {Pin{"1", "", "Net-(U1-IO27)", "passive"}, Pin{"2", "", "/D+", "passive"}}},
+            {"R17", "22", {Pin{"1", "", "Net-(U1-IO26)", "passive"}, Pin{"2", "", "/D-", "passive"}}},
+            {"U2", "BQ25640", {Pin{"21", "", "/D+", "unspecified"}, Pin{"20", "", "/D-", "unspecified"}}},
+            {"U7", "TPD4EUSB30", {Pin{"7", "", "/D+", "free"}, Pin{"9", "", "/D-", "free"}, Pin{"4", "", "/_D+", "passive"},
+                                  Pin{"2", "", "/_D-", "passive"}}},
+            {"J1", "USB_C", {Pin{"A6", "", "/_D+", "bidirectional"}, Pin{"A7", "", "/_D-", "bidirectional"}}}};
+        double y = 0;
+        for (const auto& footprint : remote->footprints) {
+            for (const auto& pin : footprint.pins) {
+                remote->pads.push_back({footprint.reference, pin.number, pin.netName, pin.pinType, 0, y, 0, "F.Cu", 0.3, 0.3});
+                y += 1;
+            }
+        }
+        Document remoteDocument;
+        QVERIFY(makeDocument(remoteDocument));
+        const kiems_gui::SignalPlan usb = kiems_gui::suggestSignal(*remote, remoteDocument, "/D+", true);
+        QCOMPARE(usb.nets, QStringList({"/D+", "Net-(U1-IO27)"}));
+        QCOMPARE(usb.partners, QStringList({"/D-", "Net-(U1-IO26)"})); // followed past R17 on its own
+        QCOMPARE(usb.seriesParts, QStringList({"R16", "R17"}));
+        QVERIFY(usb.driver && usb.driver->footprint == "U1" && usb.driver->pin == "27");
+        QCOMPARE(usb.receivers.size(), 2); // U2 pin 21 and U7 pin 7
+        QCOMPARE(usb.beyondChips, QStringList({"/_D+", "/_D-"}));
+        QCOMPARE(usb.throughChips, QStringList({"U7"}));
+        QVERIFY(kiems_gui::describeSignalPlan(usb).contains("Stops at U7"));
+        const int usbIndex = remoteDocument.addSimulation("USB", "GND");
+        kiems_gui::applySignalPlan(remoteDocument, remote.get(), usbIndex, usb);
+        const nlohmann::json usbSim = *remoteDocument.simulationJson(usbIndex);
+        // Both legs driven in antiphase, though no name pairs the MCU's nets.
+        std::map<std::string, double> drive;
+        for (const auto& excitation : usbSim["excitations"]) drive[excitation["pin"].get<std::string>()] = excitation["amplitude"].get<double>();
+        QCOMPARE(drive.size(), std::size_t(2));
+        QCOMPARE(drive["27"], 1.0);
+        QCOMPARE(drive["26"], -1.0);
+        std::set<std::string> probedPins;
+        for (const auto& net : usbSim["involved_nets"]) {
+            for (const auto& pin : net.value("probed_pins", nlohmann::json::array())) {
+                probedPins.insert(pin["footprint"].get<std::string>() + " " + pin["pin"].get<std::string>());
+            }
+        }
+        for (const char* expected : {"U2 21", "U2 20", "U7 7", "U7 9"}) QVERIFY2(probedPins.contains(expected), expected);
+        QVERIFY2(remoteDocument.validate().isEmpty(), qPrintable(remoteDocument.validate()));
     }
 
     void jobQueue() {

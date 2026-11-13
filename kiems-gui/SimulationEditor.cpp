@@ -5,6 +5,9 @@
 #include <QRegularExpression>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <limits>
 
 namespace kiems_gui {
 
@@ -135,15 +138,47 @@ QString SimulationEditor::partnerNet(const QString& net) const {
     return {};
 }
 
-std::optional<QString> SimulationEditor::partnerPin(const QString& footprint, const QString& net) const {
+std::optional<QString> SimulationEditor::partnerPin(const QString& footprint, const QString& pin, const QString& net) const {
     if (!_board) return std::nullopt;
     const std::string reference = utf8(footprint);
+    const auto padAt = [&](const std::string& number) -> std::optional<std::pair<double, double>> {
+        for (const libkicad::PadPosition& pad : _board->pads) {
+            if (pad.footprintRef == reference && pad.padNumber == number) return std::pair(pad.xMm, pad.yMm);
+        }
+        return std::nullopt;
+    };
+    // A pin name's letters and number: "A6" -> ("A", 6).
+    const auto split = [](const std::string& name) {
+        std::size_t digits = name.size();
+        while (digits > 0 && std::isdigit(static_cast<unsigned char>(name[digits - 1])) != 0) --digits;
+        const std::string number = name.substr(digits);
+        return std::pair(name.substr(0, digits), number.empty() ? -1L : std::stol(number));
+    };
+    const auto source = padAt(utf8(pin));
+    const auto [sourceLetters, sourceNumber] = split(utf8(pin));
     for (const libkicad::FootprintInfo& info : _board->footprints) {
         if (info.reference != reference) continue;
         for (const QString& candidate : differentialPartnerCandidates(net)) {
-            for (const libkicad::FootprintPin& pin : info.pins) {
-                if (pin.netName == utf8(candidate)) return qstr(pin.number);
+            // A part can have several pins on the partner net (a USB-C connector's A7 and B7): the
+            // partner is the one beside this pin, or failing positions, the likeliest by name.
+            std::optional<QString> best;
+            double bestScore = std::numeric_limits<double>::infinity();
+            for (const libkicad::FootprintPin& other : info.pins) {
+                if (other.netName != utf8(candidate)) continue;
+                double score;
+                const auto at = padAt(other.number);
+                if (source && at && (source->first != at->first || source->second != at->second)) {
+                    score = std::hypot(at->first - source->first, at->second - source->second);
+                } else {
+                    const auto [letters, number] = split(other.number);
+                    score = (letters == sourceLetters ? 0.0 : 1000.0) + std::abs(static_cast<double>(number - sourceNumber));
+                }
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = qstr(other.number);
+                }
             }
+            if (best) return best;
         }
     }
     return std::nullopt;
@@ -558,7 +593,7 @@ void SimulationEditor::applyPinProbed(Json& sim, std::vector<kiems::InvolvedNetC
 void SimulationEditor::setPinProbed(const QString& footprint, const QString& pin, bool probed) {
     const PinState state = pinState(footprint, pin);
     if (state.net.isEmpty()) return;
-    const auto partner = isDifferentialPair() ? partnerPin(footprint, state.net) : std::nullopt;
+    const auto partner = isDifferentialPair() ? partnerPin(footprint, pin, state.net) : std::nullopt;
     const QString partnerNetName = partner ? pinNet(footprint, *partner) : QString();
     editNets([&](Json& sim, std::vector<kiems::InvolvedNetConfig>& entries) {
         applyPinProbed(sim, entries, footprint, pin, state.net, probed, state.absorbing);
@@ -572,7 +607,7 @@ void SimulationEditor::setPinProbed(const QString& footprint, const QString& pin
 void SimulationEditor::setPinAbsorbing(const QString& footprint, const QString& pin, bool absorbing) {
     const PinState state = pinState(footprint, pin);
     if (state.net.isEmpty()) return;
-    const auto partner = isDifferentialPair() ? partnerPin(footprint, state.net) : std::nullopt;
+    const auto partner = isDifferentialPair() ? partnerPin(footprint, pin, state.net) : std::nullopt;
     const QString partnerNetName = partner ? pinNet(footprint, *partner) : QString();
     editNets([&](Json& sim, std::vector<kiems::InvolvedNetConfig>& entries) {
         applyPinProbed(sim, entries, footprint, pin, state.net, state.probed, absorbing);
@@ -616,7 +651,7 @@ void SimulationEditor::applyPinExcited(Json& sim, std::vector<kiems::InvolvedNet
 void SimulationEditor::setPinExcited(const QString& footprint, const QString& pin, bool excited) {
     const QString net = pinNet(footprint, pin);
     if (net.isEmpty()) return;
-    const auto partner = isDifferentialPair() ? partnerPin(footprint, net) : std::nullopt;
+    const auto partner = isDifferentialPair() ? partnerPin(footprint, pin, net) : std::nullopt;
     const QString partnerNetName = partner ? pinNet(footprint, *partner) : QString();
     editNets([&](Json& sim, std::vector<kiems::InvolvedNetConfig>& entries) {
         applyPinExcited(sim, entries, footprint, pin, net, excited);
@@ -670,7 +705,7 @@ std::optional<kiems::ExcitationConfig> SimulationEditor::excitation(const QStrin
 void SimulationEditor::updateExcitation(const QString& footprint, const QString& pin,
                                         const std::function<void(kiems::ExcitationConfig&)>& change) {
     const QString net = pinNet(footprint, pin);
-    const auto partner = isDifferentialPair() && !net.isEmpty() ? partnerPin(footprint, net) : std::nullopt;
+    const auto partner = isDifferentialPair() && !net.isEmpty() ? partnerPin(footprint, pin, net) : std::nullopt;
     _document.editSimulation(_simulation, [&](Json& sim) {
         const int index = excitationIndex(sim, utf8(footprint), utf8(pin));
         if (index < 0) return;
@@ -811,7 +846,7 @@ void SimulationEditor::reconcileDifferentialPairs() {
             entry = find(name);
             const std::vector<kiems::ProbedPin> pins = entry->probedPins();
             for (const kiems::ProbedPin& pin : pins) {
-                const auto mirroredPin = partnerPin(qstr(pin.footprint), qstr(name));
+                const auto mirroredPin = partnerPin(qstr(pin.footprint), qstr(pin.pin), qstr(name));
                 if (!mirroredPin || utf8(*mirroredPin) == pin.pin ||
                     pinNet(qstr(pin.footprint), *mirroredPin) != partner) {
                     continue;
@@ -835,7 +870,7 @@ void SimulationEditor::reconcileDifferentialPairs() {
             }
             const QString footprint = qstr(source.footprint());
             const QString net = pinNet(footprint, qstr(source.pin()));
-            const auto mirroredPin = net.isEmpty() ? std::nullopt : partnerPin(footprint, net);
+            const auto mirroredPin = net.isEmpty() ? std::nullopt : partnerPin(footprint, qstr(source.pin()), net);
             if (!mirroredPin || utf8(*mirroredPin) == source.pin()) continue;
             const QString mirroredNet = pinNet(footprint, *mirroredPin);
             bool paired = false;

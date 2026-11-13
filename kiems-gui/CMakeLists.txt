@@ -57,6 +57,8 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     SettingsPanel.hpp
     Sidebar.cpp
     Sidebar.hpp
+    SignalSetup.cpp
+    SignalSetup.hpp
     SimulationEditor.cpp
     SimulationEditor.hpp
     SimulationSet.cpp
@@ -71,6 +73,9 @@ qt_add_executable(kiems-gui WIN32 MACOSX_BUNDLE
     TraceAnalysis.hpp
     TraceView.cpp
     TraceView.hpp)
+
+# The in-app guide (Help > Simulating a Signal).
+qt_add_resources(kiems-gui "guide" PREFIX "/guide" BASE "guide" FILES "guide/SimulatingASignal.md")
 
 set_target_properties(kiems-gui PROPERTIES
     CXX_STANDARD 23
@@ -139,6 +144,8 @@ if(TARGET Qt6::Test)
         RunEstimate.hpp
         SettingsPanel.cpp
         SettingsPanel.hpp
+        SignalSetup.cpp
+        SignalSetup.hpp
         SimulationEditor.cpp
         SimulationEditor.hpp
         SimulationSet.cpp

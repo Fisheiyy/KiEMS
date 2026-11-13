@@ -120,8 +120,9 @@ private:
     const libkicad::FootprintPin* boardPin(const QString& footprint, const QString& pin) const;
     /// The partner net of `net` that exists on the board, if the name suggests one.
     QString partnerNet(const QString& net) const;
-    /// The same footprint's pin on the partner of `net`, for differential-pair mirroring.
-    std::optional<QString> partnerPin(const QString& footprint, const QString& net) const;
+    /// The same footprint's pin on the partner of `net` that pairs with `pin`, for differential-pair
+    /// mirroring: the nearest, when the part has several on the partner net.
+    std::optional<QString> partnerPin(const QString& footprint, const QString& pin, const QString& net) const;
     bool isDifferentialPair() const;
     QStringList groundNets() const;
     bool absorbsByDefault(const QString& footprint, const QString& pin, const QString& net) const;

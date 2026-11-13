@@ -64,6 +64,10 @@ private:
     void chooseBoard();
     void loadBoard();
     void addSimulation();
+    /// Sets a simulation of one signal up from a few choices (SignalSetup.hpp).
+    void addSignalSimulation();
+    /// Help › Simulating a Signal: the step-by-step guide.
+    void showGuide();
     /// Adds a Simulation Set template (see SimulationSet.hpp).
     void addSimulationSet();
     /// Adds a DC power analysis of a net the user picks (see PowerAnalysis.hpp).
@@ -182,6 +186,7 @@ private:
     QAction* _runAllAction;
     QAction* _stopAction;
     QAction* _addAction;
+    QAction* _addSignalAction;
     QAction* _addSetAction;
     QAction* _addPowerAction;
     QAction* _removeAction;
