@@ -46,6 +46,7 @@ void reportUncaughtExceptions();
 #include "kiems/dc_board.hpp"
 #include "kiems/path_utf8.hpp"
 #include "kiems/paths_config.hpp"
+#include "kiems/plot_figure.hpp"
 #include "kiems/port_resolution.hpp"
 #include "kiems/postprocess_result.hpp"
 #include "kiems/simulation.hpp"
@@ -1237,6 +1238,7 @@ int runCli(int argc, char** argv) {
         }
         postprocessResult = std::move(*result);
         saveAndRenderResults(*postprocessResult, args, simulationInputDir(args, paths));
+        waitForPlots(); // drawn side by side; every image is complete before this run reports done
     }
 
     return EXIT_SUCCESS;

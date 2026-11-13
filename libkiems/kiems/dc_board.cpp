@@ -584,6 +584,7 @@ std::expected<void, std::string> writeResult(const Result& result, const Analysi
             plotLayer(layer, named, true, directory / (stem + "_current_density.png"));
         }
     }
+    waitForPlots(); // the maps side by side, each finished before this returns
     return {};
 }
 

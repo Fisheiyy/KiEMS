@@ -2,16 +2,22 @@
 
 #include "path_utf8.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
-#include <algorithm>
+
+#include "logging.hpp"
 
 #ifdef _WIN32
 #include <process.h>
@@ -22,25 +28,98 @@ extern char** environ;
 #endif
 
 namespace kiems {
+using Cu::logError;
 namespace {
 
-/// Runs `gnuplot script` (gnuplot found on the PATH, as Matplot++ finds it) and waits for it.
-bool runGnuplot(const std::filesystem::path& script) {
+/// A gnuplot process drawing one script, started by startGnuplot().
+struct GnuplotRun {
+#ifdef _WIN32
+    std::intptr_t process = -1;
+#else
+    pid_t process = -1;
+#endif
+    std::filesystem::path script;
+};
+
+/// Starts `gnuplot script` (gnuplot found on the PATH, as Matplot++ finds it) without waiting.
+bool startGnuplot(const std::filesystem::path& script, GnuplotRun& run) {
+    run.script = script;
 #ifdef _WIN32
     // _wspawnlp joins its arguments with spaces, so a path with spaces needs its own quotes.
     const std::wstring quoted = L"\"" + script.wstring() + L"\"";
-    return _wspawnlp(_P_WAIT, L"gnuplot", L"gnuplot", quoted.c_str(), nullptr) == 0;
+    run.process = _wspawnlp(_P_NOWAIT, L"gnuplot", L"gnuplot", quoted.c_str(), nullptr);
+    return run.process != -1;
 #else
     const std::string path = script.string();
     std::array<char*, 3> argv = {const_cast<char*>("gnuplot"), const_cast<char*>(path.c_str()), nullptr};
-    pid_t pid = 0;
-    if (posix_spawnp(&pid, "gnuplot", nullptr, nullptr, argv.data(), environ) != 0) return false;
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) return false;
-    }
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    return posix_spawnp(&run.process, "gnuplot", nullptr, nullptr, argv.data(), environ) == 0;
 #endif
+}
+
+/// Waits for `run`; deletes its script if gnuplot succeeded, else keeps it (to see why) and says so.
+bool finishGnuplot(const GnuplotRun& run) {
+    bool ok = false;
+#ifdef _WIN32
+    int status = 0;
+    ok = _cwait(&status, run.process, 0) != -1 && status == 0;
+#else
+    int status = 0;
+    pid_t waited = -1;
+    while ((waited = waitpid(run.process, &status, 0)) < 0 && errno == EINTR) {
+    }
+    ok = waited == run.process && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#endif
+    if (ok) {
+        std::error_code ignored;
+        std::filesystem::remove(run.script, ignored);
+    } else {
+        logError("gnuplot failed to draw " + pathToUtf8(run.script) + "; the script is kept to see why");
+    }
+    return ok;
+}
+
+/// The plots still being drawn. Each is its own gnuplot process, so they draw side by side: one
+/// plot takes gnuplot about half a second, mostly its own startup, and a run's results have a few
+/// dozen. At most one per core runs at once.
+class PendingPlots {
+public:
+    ~PendingPlots() { waitAll(); } // nothing exits with a plot half drawn
+
+    void add(GnuplotRun run) {
+        std::unique_lock lock(_mutex);
+        const std::size_t limit = std::max(2U, std::thread::hardware_concurrency());
+        while (_runs.size() >= limit) {
+            GnuplotRun oldest = std::move(_runs.front());
+            _runs.pop_front();
+            lock.unlock();
+            _ok = finishGnuplot(oldest) && _ok;
+            lock.lock();
+        }
+        _runs.push_back(std::move(run));
+    }
+
+    bool waitAll() {
+        std::unique_lock lock(_mutex);
+        std::deque<GnuplotRun> runs;
+        runs.swap(_runs);
+        lock.unlock();
+        bool ok = true;
+        for (const GnuplotRun& run : runs) ok = finishGnuplot(run) && ok;
+        lock.lock();
+        ok = ok && _ok;
+        _ok = true;
+        return ok;
+    }
+
+private:
+    std::mutex _mutex;
+    std::deque<GnuplotRun> _runs;
+    bool _ok = true;
+};
+
+PendingPlots& pendingPlots() {
+    static PendingPlots plots;
+    return plots;
 }
 
 /// `commands` with its inline data moved into datablocks. Matplot++ follows a plot command naming
@@ -146,10 +225,14 @@ public:
             if (!file) return false;
         }
         _commands.clear();
-        // A script gnuplot failed on stays, to see why.
-        if (!runGnuplot(script)) return false;
-        std::error_code ignored;
-        std::filesystem::remove(script, ignored);
+        // Drawn in the background; waitForPlots() (or the program's exit) waits for it, and a
+        // script gnuplot failed on stays, to see why.
+        GnuplotRun run;
+        if (!startGnuplot(script, run)) {
+            logError("Couldn't start gnuplot to draw " + pathToUtf8(script));
+            return false;
+        }
+        pendingPlots().add(std::move(run));
         return true;
     }
 
@@ -170,6 +253,8 @@ private:
 };
 
 } // namespace
+
+bool waitForPlots() { return pendingPlots().waitAll(); }
 
 matplot::figure_handle newPlotFigure() {
     matplot::figure_handle figure = matplot::figure(true);
