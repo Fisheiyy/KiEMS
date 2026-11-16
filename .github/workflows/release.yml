@@ -1,0 +1,205 @@
+# Builds KiEMS for Windows x64 -- kiems-gui, the kiems command-line tool and its workers -- runs the
+# test suites, and packages a zip that runs without installing anything but KiCad and gnuplot.
+#
+# - Pushing a tag v* publishes a GitHub release with that zip (a pre-release when the tag has a "-",
+#   e.g. v0.2.0-beta.1).
+# - "Run workflow" on the Actions tab builds the same zip as a workflow artifact, and publishes a
+#   release too when "release" is ticked and a tag is given.
+#
+# The first run builds Qt, VTK, CGAL and the other vcpkg libraries from source (a couple of hours);
+# they're cached, so later runs restore them in minutes.
+#
+# macOS and Linux aren't built here: they link a source build of KiCad (submodules/libkicad's
+# kicad-source backend), a much larger job of its own.
+
+name: Build and release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a GitHub release from this build
+        type: boolean
+        default: false
+      tag:
+        description: The release's tag, e.g. v0.2.0 (created at this commit if it doesn't exist)
+        type: string
+        required: false
+
+permissions:
+  contents: write # gh release create/upload
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Choose the version
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_RELEASE: ${{ inputs.release }}
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $tag = $env:GITHUB_REF_NAME
+            $publish = "true"
+          } elseif ($env:INPUT_RELEASE -eq "true") {
+            if (-not $env:INPUT_TAG) { Write-Error "Publishing a release needs a tag (the 'tag' input)."; exit 1 }
+            $tag = $env:INPUT_TAG
+            $publish = "true"
+          } else {
+            $tag = if ($env:INPUT_TAG) { $env:INPUT_TAG } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
+            $publish = "false"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "publish=$publish" >> $env:GITHUB_OUTPUT
+          "name=KiEMS-$tag-windows-x64" >> $env:GITHUB_OUTPUT
+
+      - name: Allow long paths in git
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # .gitmodules names beelsebob's repositories; the commits this branch pins (the Windows port)
+      # are in the repository owner's forks of Copper, libkicad and CSXCAD, so fetch from those.
+      # libkicad's own KiCad submodule (1.3 GB) is left out: on Windows libkicad reads boards through
+      # an installed KiCad. RememberRemember isn't used by the CMake build.
+      - name: Fetch submodules
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          git submodule init submodules/Copper submodules/libkicad
+          git config submodule.submodules/Copper.url "https://github.com/$OWNER/Copper.git"
+          git config submodule.submodules/libkicad.url "https://github.com/$OWNER/libkicad.git"
+          git submodule update submodules/Copper submodules/libkicad
+          git -C submodules/Copper submodule init
+          git -C submodules/Copper config submodule.submodules/CSXCAD.url "https://github.com/$OWNER/CSXCAD.git"
+          git -C submodules/Copper submodule update
+          git submodule status --recursive
+
+      - name: Set up the MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # The runner's own vcpkg clone (the presets find it through VCPKG_ROOT); built packages go to a
+      # binary cache directory that's saved between runs.
+      - name: Set up vcpkg
+        run: |
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          $cache = Join-Path $env:RUNNER_TEMP "vcpkg-archives"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+
+      - name: Restore the vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: vcpkg-windows-x64-
+
+      - name: Configure
+        run: |
+          cmake --preset windows-msvc-gui-release -DKIEMS_BUILD_TESTS=ON
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Saved even when a later step fails, so a long first build of the libraries isn't lost.
+      - name: Save the vcpkg cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
+      - name: Build
+        run: |
+          cmake --build --preset windows-msvc-gui-release --target `
+            kiems-cli kiems_fdtd_worker copper_fdtd_worker kiems-gui `
+            kiems-gui-tests dc_analysis_tests trace_profile_tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Test
+        working-directory: out/windows-msvc-gui-release/bin
+        run: |
+          foreach ($test in @(".\dc_analysis_tests.exe", ".\trace_profile_tests.exe")) {
+            & $test
+            if ($LASTEXITCODE) { Write-Error "$test failed ($LASTEXITCODE)"; exit 1 }
+          }
+          .\kiems-gui-tests.exe -platform windows -maxwarnings 0
+          if ($LASTEXITCODE) { Write-Error "kiems-gui-tests failed ($LASTEXITCODE)"; exit 1 }
+
+      # The four programs, every DLL beside them (vcpkg's and Qt's, deployed there by the build), Qt's
+      # plugin folders, and the MSVC runtime, so nothing needs installing but KiCad and gnuplot.
+      # Left out: Qt6Test (the tests'), and Qt6Network with the only plugins that use it -- TLS,
+      # network information, and the TUIO touch input under generic/, none of which kiems-gui loads
+      # (Qt6Network also imports an OpenSSL the build doesn't deploy).
+      - name: Package
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          $bin = "out\windows-msvc-gui-release\bin"
+          $stage = "package\$env:NAME"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          foreach ($exe in "kiems-gui.exe", "kiems.exe", "kiems_fdtd_worker.exe", "copper_fdtd_worker.exe") {
+            Copy-Item (Join-Path $bin $exe) $stage
+          }
+          $unusedDlls = "Qt6Test.dll", "Qt6Network.dll"
+          $unusedPlugins = "generic", "networkinformation", "tls"
+          Get-ChildItem $bin -Filter *.dll | Where-Object { $unusedDlls -notcontains $_.Name } | Copy-Item -Destination $stage
+          Get-ChildItem $bin -Directory | Where-Object { $unusedPlugins -notcontains $_.Name } |
+            ForEach-Object { Copy-Item $_.FullName $stage -Recurse }
+          $crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir "x64") -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          if (-not $crt) { Write-Error "No MSVC runtime under $env:VCToolsRedistDir"; exit 1 }
+          Copy-Item (Join-Path $crt.FullName "*.dll") $stage
+          Copy-Item packaging\windows\README.txt, LICENSE $stage
+          Compress-Archive -Path $stage -DestinationPath "package\$env:NAME.zip" -CompressionLevel Optimal
+          Get-ChildItem package -File | Format-Table Name, Length
+
+      # A smoke test of the package itself, away from the build tree: the tools start and find their
+      # libraries.
+      - name: Check the package runs
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          Expand-Archive "package\$env:NAME.zip" -DestinationPath "$env:RUNNER_TEMP\check"
+          & "$env:RUNNER_TEMP\check\$env:NAME\kiems.exe" --help | Select-Object -First 5
+          if ($LASTEXITCODE) { Write-Error "kiems.exe --help failed ($LASTEXITCODE)"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.name }}
+          path: package/${{ steps.version.outputs.name }}.zip
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "package/$NAME.zip" --clobber
+          else
+            prerelease=()
+            [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+            gh release create "$TAG" "package/$NAME.zip" --target "$GITHUB_SHA" --title "KiEMS $TAG" \
+              --notes-file packaging/windows/release-notes.md --generate-notes "${prerelease[@]}"
+          fi
