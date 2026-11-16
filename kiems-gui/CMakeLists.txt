@@ -173,6 +173,16 @@ if(TARGET Qt6::Test)
     if(BUILD_TESTING)
         add_test(NAME kiems-gui-tests COMMAND kiems-gui-tests -platform offscreen)
     endif()
+    # The tests run on Qt's offscreen platform, so no window opens. On Windows the build deploys
+    # only the windows platform plugin beside the executables, and without the offscreen one Qt
+    # stops with a modal error box -- which no one answers on a CI runner, so the job hangs.
+    if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
+        add_custom_command(TARGET kiems-gui-tests POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:kiems-gui-tests>/platforms"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>"
+                    "$<TARGET_FILE_DIR:kiems-gui-tests>/platforms/"
+            VERBATIM)
+    endif()
 endif()
 
 install(TARGETS kiems-gui

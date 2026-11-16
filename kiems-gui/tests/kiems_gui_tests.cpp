@@ -36,6 +36,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QOpenGLContext>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTreeWidget>
@@ -1023,7 +1024,11 @@ private slots:
         QCOMPARE(scene.gridSummary, QString("Mesh: 5 x 5 x 4 lines, 0.00 M cells"));
         QVERIFY(std::abs(scene.boundsMin.z() + 1.52f) < 1e-5f);
 
-        // The page loads it in the background and draws it, without opening a window.
+        // The page loads it in the background and draws it, without opening a window -- with
+        // OpenGL, which Qt's offscreen platform doesn't have on Windows.
+        if (QOpenGLContext probe; !probe.create()) {
+            QSKIP("No OpenGL context on this platform (e.g. offscreen on Windows): the scene was checked, not drawn");
+        }
         kiems_gui::GeometryView view;
         view.setAttribute(Qt::WA_DontShowOnScreen);
         view.resize(900, 650);
