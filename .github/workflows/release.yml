@@ -140,7 +140,7 @@ jobs:
             & $test
             if ($LASTEXITCODE) { Write-Error "$test failed ($LASTEXITCODE)"; exit 1 }
           }
-          .\kiems-gui-tests.exe -platform windows -maxwarnings 0
+          .\kiems-gui-tests.exe -platform offscreen -maxwarnings 0
           if ($LASTEXITCODE) { Write-Error "kiems-gui-tests failed ($LASTEXITCODE)"; exit 1 }
 
       # The four programs, every DLL beside them (vcpkg's and Qt's, deployed there by the build), Qt's
